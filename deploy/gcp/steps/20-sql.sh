@@ -9,14 +9,22 @@ if gc sql instances describe "$GCP_SQL_INSTANCE" >/dev/null 2>&1; then
   gc sql instances patch "$GCP_SQL_INSTANCE" --activation-policy=ALWAYS --quiet >/dev/null 2>&1 || true
 else
   say "creating $GCP_SQL_INSTANCE (a few minutes)…"
-  gc sql instances create "$GCP_SQL_INSTANCE" \
-    --database-version=POSTGRES_16 --tier="$GCP_SQL_TIER" --region="$GCP_REGION" \
-    --storage-auto-increase --no-assign-ip --network=default \
-    --database-flags=cloudsql.iam_authentication=on --quiet >/dev/null 2>&1 \
-  || gc sql instances create "$GCP_SQL_INSTANCE" \
-    --database-version=POSTGRES_16 --tier="$GCP_SQL_TIER" --region="$GCP_REGION" \
-    --storage-auto-increase --quiet >/dev/null
-  say "created"
+  # The edition must be explicit: a project defaulting to ENTERPRISE_PLUS
+  # rejects shared-core tiers like db-g1-small.
+  common=(--database-version=POSTGRES_16 --tier="$GCP_SQL_TIER"
+          --edition="${GCP_SQL_EDITION:-ENTERPRISE}" --region="$GCP_REGION"
+          --storage-auto-increase --quiet)
+  # Prefer a private IP. It needs service-networking peering on the VPC, which
+  # not every project has, so fall back to an instance with no authorised
+  # networks — Cloud Run still reaches it over the Cloud SQL unix socket.
+  if gc sql instances create "$GCP_SQL_INSTANCE" "${common[@]}" \
+       --no-assign-ip --network=default >/dev/null 2>&1; then
+    say "created with a private IP"
+  else
+    say "private IP unavailable (no VPC peering) — creating without public authorised networks"
+    gc sql instances create "$GCP_SQL_INSTANCE" "${common[@]}" >/dev/null
+    say "created"
+  fi
 fi
 gc sql users set-password securegpt --instance="$GCP_SQL_INSTANCE" \
   --password="$POSTGRES_PASSWORD" --quiet >/dev/null 2>&1 \

@@ -44,3 +44,21 @@ put_secret() {
 }
 
 run_url() { gc run services describe "$1" --region "$GCP_REGION" --format='value(status.url)' 2>/dev/null; }
+
+# Cloud Run can only pull from Artifact Registry, so public images (ghcr.io,
+# Docker Hub) have to be mirrored first. Cloud Build does the copy inside
+# Google's network rather than pulling gigabytes through this machine.
+#   mirror_image <source-ref> <name:tag>  -> echoes the Artifact Registry ref
+mirror_image() {
+  local src="$1" dest_tag="$2"
+  local repo="${GCP_AR_REPO:-secure-gpt}"
+  local dest="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${repo}/${dest_tag}"
+  if gc artifacts docker images describe "$dest" >/dev/null 2>&1; then
+    echo "$dest"; return
+  fi
+  local ctx; ctx=$(mktemp -d)
+  printf 'FROM %s\n' "$src" > "$ctx/Dockerfile"
+  gc builds submit "$ctx" --tag "$dest" --quiet >/dev/null
+  rm -rf "$ctx"
+  echo "$dest"
+}

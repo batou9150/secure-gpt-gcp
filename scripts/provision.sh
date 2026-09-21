@@ -18,17 +18,56 @@ cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 
 # --- endpoints for the active target ----------------------------------------
-# local: docker compose on this machine. gcp: Cloud Run URLs recorded in .env
-# by the deploy scripts. Everything below is target-agnostic from here on.
+# local: docker compose on this machine.
+#
+# gcp: both Cloud Run services are IAM-protected (this org forbids allUsers),
+# and their APIs want their own bearer token in Authorization — which would
+# collide with the platform identity token. `gcloud run services proxy` opens
+# an authenticated local tunnel instead, so Authorization stays free for the
+# application's own key and everything below is target-agnostic.
 if [ "${TARGET:-local}" = gcp ]; then
-  GW="${GCP_LITELLM_URL:?litellm is not deployed yet — run: make up}"
-  UI="${GCP_OPENWEBUI_URL:?open-webui is not deployed yet — run: make up}"
+  : "${GCP_LITELLM_URL:?litellm is not deployed yet — run: make up}"
   IN_CLOUD=1
+  _proxy_pids=()
+  _start_proxy() {  # _start_proxy <service> <local-port>
+    gcloud --project "$GCP_PROJECT" run services proxy "$1" \
+      --region "${GCP_REGION:-europe-west1}" --port "$2" >/dev/null 2>&1 &
+    _proxy_pids+=($!)
+    # curl does the waiting: retry through connection-refused while the
+    # tunnel comes up. `|| true` because set -e is on and a refused
+    # connection here is expected, not fatal.
+    curl -s -o /dev/null --retry 40 --retry-delay 1 --retry-connrefused \
+      --retry-all-errors -m 5 "http://127.0.0.1:$2/" || true
+  }
+  _stop_proxies() { for p in "${_proxy_pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
+  trap _stop_proxies EXIT
+  _start_proxy litellm 8401
+  GW="http://127.0.0.1:8401"
+  # What Open WebUI itself should use from inside its own container: the
+  # auth-proxy sidecar, not the tunnel we use from this machine.
+  OWUI_GATEWAY="http://localhost:4000/v1"
+  # Open WebUI is deployed after the keys exist, so on the first pass it is
+  # not there yet. Provision what we can and say so.
+  if [ -n "${GCP_OPENWEBUI_URL:-}" ]; then
+    _start_proxy open-webui 8301
+    UI="http://127.0.0.1:8301"
+  else
+    UI=""
+  fi
 else
   GW="http://${LITELLM_BIND:-127.0.0.1:4000}"
   UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
+  OWUI_GATEWAY="http://litellm:4000/v1"   # the compose service name
   IN_CLOUD=0
 fi
+
+# Virtual keys live in each target's own database, so they are recorded under
+# a per-target name: OPENWEBUI_CHAT_KEY for local, GCP_OPENWEBUI_CHAT_KEY for
+# Cloud Run. Sharing one name would point each target at the other's keys.
+KEY_PREFIX=""
+[ "$IN_CLOUD" = 1 ] && KEY_PREFIX="GCP_"
+_k() { local n="${KEY_PREFIX}$1"; echo "${!n:-}"; }
+
 # The config file IS the allow-list; derive key scopes from it so the two
 # cannot drift and so this works for whichever provider is selected.
 CFG="${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}"
@@ -60,7 +99,7 @@ say "config: ${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}"
 jqp() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 
 curl -s -o /dev/null --retry 60 --retry-delay 2 --retry-all-errors -m 10 "$GW/health/liveliness"
-curl -s -o /dev/null --retry 60 --retry-delay 2 --retry-all-errors -m 10 "$UI/health"
+[ -n "$UI" ] && curl -s -o /dev/null --retry 60 --retry-delay 2 --retry-all-errors -m 10 "$UI/health" || true
 
 # --- 1. virtual keys -------------------------------------------------------
 key_valid() {
@@ -129,8 +168,8 @@ ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL [EXTRA_JSON
 CHAT_ROUTES='"allowed_routes":["/v1/models","/models","/v1/chat/completions","/chat/completions"]'
 EMBED_ROUTES='"allowed_routes":["/v1/models","/models","/v1/embeddings","/embeddings"]'
 
-ensure_key OPENWEBUI_CHAT_KEY  open-webui-chat  "$CHAT_MODELS"  "$CHAT_RPM_LIMIT"  "$CHAT_PARALLEL"  chat "$CHAT_ROUTES"
-ensure_key OPENWEBUI_EMBED_KEY open-webui-embed "$EMBED_MODELS" "$EMBED_RPM_LIMIT" "$EMBED_PARALLEL" embedding "$EMBED_ROUTES"
+ensure_key "${KEY_PREFIX}OPENWEBUI_CHAT_KEY"  open-webui-chat  "$CHAT_MODELS"  "$CHAT_RPM_LIMIT"  "$CHAT_PARALLEL"  chat "$CHAT_ROUTES"
+ensure_key "${KEY_PREFIX}OPENWEBUI_EMBED_KEY" open-webui-embed "$EMBED_MODELS" "$EMBED_RPM_LIMIT" "$EMBED_PARALLEL" embedding "$EMBED_ROUTES"
 
 # A key bound to the agent via agent_id. This is what the Agents page in the
 # LiteLLM UI counts: with none, the agent shows "Needs Setup". It also gives
@@ -143,7 +182,7 @@ except Exception:
     print("")')
 for pair in $AGENT_IDS; do
   aname="${pair%%=*}"; aid="${pair##*=}"
-  var="A2A_KEY_$(printf '%s' "$aname" | tr 'a-z-' 'A-Z_')"
+  var="${KEY_PREFIX}A2A_KEY_$(printf '%s' "$aname" | tr 'a-z-' 'A-Z_')"
   cur="${!var:-}"
   if key_valid "$cur"; then
     say "agent key ($aname): reusing existing"
@@ -164,15 +203,15 @@ done
 # The ADK agent calls the gateway for its own reasoning. Its key deliberately
 # excludes A2A models so it cannot call itself back through the gateway.
 if [ -n "$AGENT_LLM_MODELS" ]; then
-  before="${ADK_AGENT_LITELLM_KEY:-}"
+  before="$(_k ADK_AGENT_LITELLM_KEY)"
   # Model scoping alone is not enough: the native /a2a/{agent} endpoint
   # authenticates the key but does not apply the model allow-list, so the
   # agent's own key could still reach an agent there. allowed_routes is an
   # allowlist enforced for every route, so pin the key to the chat route.
-  ensure_key ADK_AGENT_LITELLM_KEY adk-agent "$AGENT_LLM_MODELS" \
+  ensure_key "${KEY_PREFIX}ADK_AGENT_LITELLM_KEY" adk-agent "$AGENT_LLM_MODELS" \
              "${AGENT_RPM_LIMIT:-300}" "${AGENT_PARALLEL:-10}" "ADK agent" \
              '"allowed_routes":["/v1/chat/completions","/chat/completions"]' 
-  if [ "$before" != "$ADK_AGENT_LITELLM_KEY" ]; then
+  if [ "$before" != "$(_k ADK_AGENT_LITELLM_KEY)" ]; then
     if [ "$IN_CLOUD" = 0 ]; then
       docker compose up -d adk-agent >/dev/null 2>&1 || true
       say "ADK agent: restarted with its new key"
@@ -180,6 +219,13 @@ if [ -n "$AGENT_LLM_MODELS" ]; then
       say "ADK agent: re-run 'make up' to redeploy it with the new key"
     fi
   fi
+fi
+
+if [ -z "$UI" ]; then
+  say "Open WebUI not deployed yet — keys are provisioned; re-run after it is up"
+  echo
+  echo "Provisioned (gateway only)."
+  exit 0
 fi
 
 # --- 2. admin account ------------------------------------------------------
@@ -200,8 +246,8 @@ fi
 curl -s -o /dev/null -m 30 -X POST "$UI/openai/config/update" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"ENABLE_OPENAI_API\":true,
-       \"OPENAI_API_BASE_URLS\":[\"http://litellm:4000/v1\"],
-       \"OPENAI_API_KEYS\":[\"$OPENWEBUI_CHAT_KEY\"],
+       \"OPENAI_API_BASE_URLS\":[\"$OWUI_GATEWAY\"],
+       \"OPENAI_API_KEYS\":[\"$(_k OPENWEBUI_CHAT_KEY)\"],
        \"OPENAI_API_CONFIGS\":{\"0\":{\"enable\":true,\"model_ids\":[$CHAT_MODELS]}}}"
 say "connection: LiteLLM only, chat models only, scoped key"
 
@@ -211,7 +257,7 @@ curl -s -o /dev/null -m 60 -X POST "$UI/api/v1/retrieval/embedding/update" \
        \"RAG_EMBEDDING_MODEL\":\"${EMBEDDING_MODEL:-gemini-embedding-001}\",
        \"RAG_EMBEDDING_BATCH_SIZE\":16,
        \"RAG_EMBEDDING_CONCURRENT_REQUESTS\":4,
-       \"openai_config\":{\"url\":\"http://litellm:4000/v1\",\"key\":\"$OPENWEBUI_EMBED_KEY\"}}"
+       \"openai_config\":{\"url\":\"$OWUI_GATEWAY\",\"key\":\"$(_k OPENWEBUI_EMBED_KEY)\"}}"
 say "RAG: embeddings via LiteLLM on the separate embedding key"
 
 # Display names. An entry whose id equals the base model id renames that model

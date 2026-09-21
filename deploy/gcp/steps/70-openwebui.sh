@@ -1,22 +1,35 @@
 #!/usr/bin/env bash
-# The UI on Cloud Run: public (it has its own auth), with direct VPC egress so
-# it can reach the internal-ingress gateway.
+# The UI on Cloud Run, with an auth-proxy sidecar that signs calls to the
+# gateway. Cloud Run IAM protects both services (this org forbids allUsers),
+# so reaching the UI needs an identity token — see README for IAP.
 set -euo pipefail
 . "$(dirname "$0")/../lib.sh"
-step "Cloud Run: open-webui"
-GW="${GCP_LITELLM_URL:?litellm must be deployed first}"
+step "Cloud Run: open-webui (+ auth-proxy sidecar)"
+: "${GCP_LITELLM_URL:?litellm must be deployed first}"
 
-gc run deploy open-webui \
-  --image "${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}" \
-  --region "$GCP_REGION" --service-account "$SA_EMAIL" \
-  --port 8080 --cpu 2 --memory 4Gi --min-instances 0 --max-instances 5 \
-  --add-cloudsql-instances "$SQL_CONN" \
-  --network default --subnet default --vpc-egress private-ranges-only \
-  --allow-unauthenticated --ingress all \
-  --set-secrets "WEBUI_SECRET_KEY=secure-gpt-openwebui-secret-key:latest,DB_PASSWORD=secure-gpt-postgres-password:latest" \
-  --set-env-vars "^@^DATABASE_URL=postgresql://securegpt:${POSTGRES_PASSWORD}@/openwebui?host=/cloudsql/${SQL_CONN}@OPENAI_API_BASE_URL=${GW}/v1@OPENAI_API_KEY=${OPENWEBUI_CHAT_KEY:-$LITELLM_MASTER_KEY}@ENABLE_OPENAI_API=True@ENABLE_OLLAMA_API=False@ENABLE_DIRECT_CONNECTIONS=False@ENABLE_EVALUATION_ARENA_MODELS=False@ENABLE_WEB_SEARCH=False@ENABLE_IMAGE_GENERATION=False@ENABLE_COMMUNITY_SHARING=False@ENABLE_AUTOCOMPLETE_GENERATION=False@ENABLE_ADMIN_CHAT_ACCESS=False@ENABLE_ADMIN_EXPORT=False@DEFAULT_USER_ROLE=pending@WEBUI_AUTH=True@WEBUI_NAME=Secure GPT@WEBUI_SESSION_COOKIE_SAME_SITE=strict@WEBUI_SESSION_COOKIE_SECURE=True@ANONYMIZED_TELEMETRY=False@DO_NOT_TRACK=1@SCARF_NO_ANALYTICS=True@ENABLE_VERSION_UPDATE_CHECK=False@RAG_EMBEDDING_ENGINE=openai@RAG_EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini-embedding-001}@RAG_OPENAI_API_BASE_URL=${GW}/v1@RAG_OPENAI_API_KEY=${OPENWEBUI_EMBED_KEY:-$LITELLM_MASTER_KEY}@AUDIO_STT_ENGINE=" \
-  --quiet >/dev/null
+say "mirroring the Open WebUI image into Artifact Registry"
+export OPENWEBUI_IMAGE
+OPENWEBUI_IMAGE=$(mirror_image "${OPENWEBUI_SOURCE_IMAGE:-ghcr.io/open-webui/open-webui:main}" "open-webui:main")
+say "image: $OPENWEBUI_IMAGE"
+
+REPO="${GCP_AR_REPO:-secure-gpt}"
+SHIM_TAG=$(cat deploy/gcp/auth-proxy/Dockerfile deploy/gcp/auth-proxy/main.py | shasum -a 256 | cut -c1-12)
+export SHIM_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO}/auth-proxy:${SHIM_TAG}"
+gc artifacts docker images describe "$SHIM_IMAGE" >/dev/null 2>&1 \
+  || gc builds submit deploy/gcp/auth-proxy --tag "$SHIM_IMAGE" --quiet >/dev/null
+
+export SA_EMAIL SQL_CONN GCP_LITELLM_URL
+export OPENWEBUI_CHAT_KEY="${OPENWEBUI_CHAT_KEY:-$LITELLM_MASTER_KEY}"
+export OPENWEBUI_EMBED_KEY="${OPENWEBUI_EMBED_KEY:-$LITELLM_MASTER_KEY}"
+
+tmpdir=$(mktemp -d); trap 'rm -rf "$tmpdir"' EXIT
+python3 deploy/gcp/render.py deploy/gcp/openwebui.service.yaml.tpl > "$tmpdir/open-webui.service.yaml"
+gc run services replace "$tmpdir/open-webui.service.yaml" --region "$GCP_REGION" --quiet >/dev/null
+
+# The runtime SA must be able to invoke the gateway on the UI's behalf.
+gc run services add-iam-policy-binding litellm --region "$GCP_REGION" \
+  --member "serviceAccount:${SA_EMAIL}" --role roles/run.invoker --quiet >/dev/null 2>&1 || true
 
 put_env GCP_OPENWEBUI_URL "$(run_url open-webui)"
 say "deployed: $(run_url open-webui)"
-say "note: WEBUI_SESSION_COOKIE_SECURE=True — Cloud Run terminates TLS, so cookies are https-only"
+say "IAM-protected: reach it with 'gcloud run services proxy open-webui --region $GCP_REGION'"

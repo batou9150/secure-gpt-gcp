@@ -15,8 +15,11 @@ command -v agents-cli >/dev/null || {
   exit 1
 }
 
-GW="${GCP_LITELLM_URL:?litellm must be deployed first}"
-AGENT_KEY="${ADK_AGENT_LITELLM_KEY:?run make provision once so the agent has a scoped key}"
+# On Agent Runtime the agent reaches Vertex directly with its service
+# account: Cloud Run is IAM-protected here and the LiteLLM client cannot mint
+# an identity token, and there is no sidecar slot on Agent Runtime to do it.
+# See _model() in weather_time_agent/agent.py.
+: "${GCP_LITELLM_URL:?litellm must be deployed first}"
 
 cd adk-agent
 agents-cli deploy \
@@ -24,7 +27,7 @@ agents-cli deploy \
   --region "${GCP_AGENT_LOCATION:-$GCP_REGION}" \
   --service-name "$AGENT_RUNTIME_NAME" \
   --service-account "$SA_EMAIL" \
-  --update-env-vars "LITELLM_BASE_URL=${GW}/v1,LITELLM_API_KEY=${AGENT_KEY},AGENT_MODEL=${ADK_AGENT_MODEL:-gemini-3.8-flash},APP_URL=${GW}" \
+  --update-env-vars "AGENT_LLM_ROUTE=vertex,AGENT_MODEL=${ADK_AGENT_MODEL:-gemini-3.8-flash},GOOGLE_GENAI_USE_VERTEXAI=1,GOOGLE_CLOUD_PROJECT=${GCP_PROJECT},GOOGLE_CLOUD_LOCATION=${VERTEX_LOCATION:-eu}" \
   --no-confirm-project
 cd "$ROOT"
 
@@ -34,7 +37,9 @@ try:
     d = json.load(open("adk-agent/deployment_metadata.json"))
 except Exception:
     sys.exit("could not read adk-agent/deployment_metadata.json")
-print(d.get("remote_agent_engine_id") or d.get("resource_name") or "")')
+print(d.get("remote_agent_runtime_id") or d.get("remote_agent_engine_id") or "")')
 [ -n "$resource" ] || { echo "  deploy finished but no resource name was recorded"; exit 1; }
 put_env GCP_AGENT_ENGINE_RESOURCE "$resource"
 say "deployed: $resource"
+a2a=$(python3 -c 'import json;print(json.load(open("adk-agent/deployment_metadata.json")).get("is_a2a"))')
+say "A2A enabled: ${a2a}"

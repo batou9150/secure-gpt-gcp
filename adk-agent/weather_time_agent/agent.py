@@ -71,15 +71,36 @@ def get_current_time(city: str) -> dict:
     }
 
 
-root_agent = Agent(
-    name="weather_time_agent",
-    model=LiteLlm(
-        # Routed back through the gateway; "openai/" just selects LiteLLM's
-        # OpenAI-compatible client, the model behind it is Gemini on Vertex.
-        model="openai/" + os.environ.get("AGENT_MODEL", "gemini-3.8-flash"),
+def _model():
+    """The agent's own LLM, routed according to where the agent is running.
+
+    ``gateway`` (the local default) sends the agent's reasoning back through
+    the LiteLLM gateway on a scoped virtual key, so the gateway stays the one
+    egress point and the one place spend is counted.
+
+    ``vertex`` is used on Agent Runtime. Cloud Run there is IAM-protected and
+    every caller must present a Google identity token for its audience; the
+    LiteLLM client cannot mint one, and Agent Runtime has no sidecar to do it
+    for us. So the agent talks to Vertex directly with its own service
+    account instead — still IAM-scoped and still pinned to the EU, but its
+    own calls do not appear in the gateway's spend log.
+    """
+    route = os.environ.get("AGENT_LLM_ROUTE", "gateway")
+    name = os.environ.get("AGENT_MODEL", "gemini-3.8-flash")
+    if route == "vertex":
+        return name  # ADK uses Vertex when GOOGLE_GENAI_USE_VERTEXAI=1
+    return LiteLlm(
+        # "openai/" only selects LiteLLM's OpenAI-compatible client; the model
+        # behind the gateway is Gemini on Vertex.
+        model="openai/" + name,
         api_base=os.environ["LITELLM_BASE_URL"],
         api_key=os.environ["LITELLM_API_KEY"],
-    ),
+    )
+
+
+root_agent = Agent(
+    name="weather_time_agent",
+    model=_model(),
     description="Answers questions about the weather and the current time in a city.",
     instruction=(
         "You are a concise assistant that reports the weather and the current time "

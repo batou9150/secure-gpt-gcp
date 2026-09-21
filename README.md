@@ -198,7 +198,44 @@ APIs → IAM → Cloud SQL → secrets
    → make provision
 ```
 
-### The A2A auth sidecar
+### This organization forbids public Cloud Run services
+
+An org policy blocks `allUsers` on Cloud Run (domain restricted sharing), so
+**neither service can be made public**. Both are IAM-protected, and every
+caller must present a Google identity token for the service's audience. That
+is a stronger posture than public + API key — two independent layers — but it
+shapes the design:
+
+- **Open WebUI cannot mint identity tokens**, so it reaches the gateway
+  through an `auth-proxy` sidecar on `localhost:4000` that signs each call
+  with the runtime service account.
+- **Reaching the UI** needs an authenticated tunnel:
+  `gcloud run services proxy open-webui --region europe-west1`. For real
+  users, put an external HTTPS load balancer with IAP in front — that is the
+  sanctioned pattern under this policy.
+- **`make provision` and `make smoke` open those tunnels automatically**, so
+  both work unchanged against either target. Without the tunnel the
+  application's own bearer token would collide with the platform one.
+
+### The auth-proxy sidecar
+
+One small image, two modes, deployed as a sidecar in both services. It exists
+because two callers cannot sign their own requests:
+
+| Mode | Runs in | Signs with | Why |
+|---|---|---|---|
+| `a2a` | litellm | OAuth access token | Agent Runtime's A2A endpoint sits behind `aiplatform.googleapis.com` and wants a token that expires hourly; LiteLLM's A2A registry only holds static credentials. |
+| `cloudrun` | open-webui | identity token | Cloud Run IAM requires one and Open WebUI cannot mint it. Moves Open WebUI's own key to `x-litellm-api-key` so it is not shadowed. |
+
+It listens on the pod's localhost and no Cloud Run port routes to it, so the
+tokens never leave the instance.
+
+**It also rewrites the agent card.** Agent Runtime advertises its own
+`aiplatform.googleapis.com` address in three places — `url`,
+`supportedInterfaces` and `additionalInterfaces`, all camelCase. A2A clients
+follow those, have no token, and get a 401. The proxy points all three back
+at itself. Miss one and the failure is a confusing 401 from a URL nobody
+configured.
 
 Agent Runtime serves the agent's A2A endpoint behind
 `aiplatform.googleapis.com`, which needs a Google OAuth token that expires
@@ -219,10 +256,28 @@ an A2A agent itself.
 - **Redis is not deployed.** It only backed cross-worker rate limiting, and
   Cloud Run scales by instance. Add Memorystore if you need limits to hold
   across instances rather than per instance.
-- **Open WebUI is public**, protected by its own login. Put it behind IAP or
-  a load balancer with Cloud Armor before exposing it widely.
-- **LiteLLM is never public**: ingress `internal`, reached by Open WebUI over
-  direct VPC egress.
+- **Neither service is public** — the org policy forbids it. See above.
+- **The agent calls Vertex directly on Agent Runtime**, not through the
+  gateway. Agent Runtime has no sidecar slot and the LiteLLM client cannot
+  mint an identity token, so `AGENT_LLM_ROUTE=vertex` makes the agent use its
+  service account instead. Still IAM-scoped and EU-pinned, but *the agent's
+  own reasoning calls do not appear in the gateway's spend log on GCP*. They
+  do locally, where `AGENT_LLM_ROUTE=gateway` is the default.
+- **Cloud SQL has a public IP with zero authorised networks**, because
+  private IP needs service-networking peering that this project lacks. It
+  accepts no direct connections; Cloud Run reaches it over the Cloud SQL unix
+  socket. `make smoke` asserts the authorised-network list is empty. Add VPC
+  peering and recreate with `--no-assign-ip` if you want private IP.
+- **Virtual keys are per target.** Each target has its own database, so the
+  keys are recorded under separate names (`OPENWEBUI_CHAT_KEY` for local,
+  `GCP_OPENWEBUI_CHAT_KEY` for Cloud Run). Sharing one name points each
+  target at the other's keys, and every call 401s.
+- **One known upstream gap on GCP.** LiteLLM's *native* `/a2a/{agent}`
+  passthrough implements A2A protocol 1.0; Agent Runtime answers in 0.3, so
+  that surface returns a version error. The chat bridge — what Open WebUI
+  actually uses — is unaffected and passes, and the native passthrough works
+  on the local target. `make smoke` reports it as `KNOWN` rather than
+  failing, so the suite stays a useful gate.
 - **One runtime service account** (`secure-gpt-run`) for both Cloud Run
   services and the agent, holding `cloudsql.client`,
   `secretmanager.secretAccessor` and `aiplatform.user`. No provider API key

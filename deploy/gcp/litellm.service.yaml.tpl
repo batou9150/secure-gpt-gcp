@@ -14,6 +14,9 @@ spec:
         autoscaling.knative.dev/maxScale: "${LITELLM_MAX_INSTANCES:-5}"
         run.googleapis.com/cloudsql-instances: "${SQL_CONN}"
         run.googleapis.com/execution-environment: gen2
+        # LiteLLM reads its agent registry at startup and fetches the agent
+        # card through the sidecar, so the sidecar has to be listening first.
+        run.googleapis.com/container-dependencies: '{"litellm":["auth-proxy"]}'
     spec:
       serviceAccountName: "${SA_EMAIL}"
       containerConcurrency: 40
@@ -32,7 +35,7 @@ spec:
               memory: 4Gi
           env:
             - name: DATABASE_URL
-              value: "postgresql://securegpt:${POSTGRES_PASSWORD}@/litellm?host=/cloudsql/${SQL_CONN}"
+              value: "postgresql://securegpt:${POSTGRES_PASSWORD}@localhost/litellm?host=/cloudsql/${SQL_CONN}"
             - name: LITELLM_MASTER_KEY
               valueFrom:
                 secretKeyRef: { name: secure-gpt-litellm-master-key, key: latest }
@@ -75,13 +78,15 @@ spec:
 
         # Attaches a fresh Google token to A2A calls bound for Agent Runtime.
         # Listens on localhost only, so nothing outside the instance can use it.
-        - name: a2a-shim
+        - name: auth-proxy
           image: "${SHIM_IMAGE}"
           resources:
             limits:
               cpu: "1"
               memory: 512Mi
           env:
+            - name: MODE
+              value: a2a
             - name: AGENT_ENGINE_RESOURCE
               value: "${AGENT_ENGINE_RESOURCE:-}"
             - name: AGENT_APP_NAME
@@ -90,6 +95,11 @@ spec:
               value: "${AGENT_ENGINE_LOCATION:-europe-west1}"
             - name: PORT
               value: "8081"
+          startupProbe:
+            httpGet: { path: /healthz, port: 8081 }
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 20
       volumes:
         - name: litellm-config
           secret:
