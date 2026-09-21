@@ -48,11 +48,16 @@ if [ "${TARGET:-local}" = gcp ]; then
   OWUI_GATEWAY="http://localhost:4000/v1"
   # Open WebUI is deployed after the keys exist, so on the first pass it is
   # not there yet. Provision what we can and say so.
-  if [ -n "${GCP_OPENWEBUI_URL:-}" ]; then
+  if [ -z "${GCP_OPENWEBUI_URL:-}" ]; then
+    UI=""
+  elif [ "$(gcloud --project "$GCP_PROJECT" run services describe open-webui \
+             --region "${GCP_REGION:-europe-west1}" \
+             --format='value(metadata.annotations."run.googleapis.com/invoker-iam-disabled")' \
+             2>/dev/null)" = "true" ]; then
+    UI="$GCP_OPENWEBUI_URL"
+  else
     _start_proxy open-webui 8301
     UI="http://127.0.0.1:8301"
-  else
-    UI=""
   fi
 else
   GW="http://${LITELLM_BIND:-127.0.0.1:4000}"

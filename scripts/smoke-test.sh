@@ -29,10 +29,20 @@ if [ "${TARGET:-local}" = gcp ]; then
   }
   _stop_proxies() { for p in "${_proxy_pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
   trap _stop_proxies EXIT
+  # The gateway keeps its invoker IAM check, so it needs an authenticated
+  # tunnel. The UI may have the check disabled (see 70-openwebui.sh), in
+  # which case its public URL works directly.
   _start_proxy litellm 8401
-  _start_proxy open-webui 8301
   GW="http://127.0.0.1:8401"
-  UI="http://127.0.0.1:8301"
+  if [ "$(gcloud --project "$GCP_PROJECT" run services describe open-webui \
+            --region "${GCP_REGION:-europe-west1}" \
+            --format='value(metadata.annotations."run.googleapis.com/invoker-iam-disabled")' \
+            2>/dev/null)" = "true" ]; then
+    UI="$GCP_OPENWEBUI_URL"
+  else
+    _start_proxy open-webui 8301
+    UI="http://127.0.0.1:8301"
+  fi
 else
   GW="http://${LITELLM_BIND:-127.0.0.1:4000}"
   UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
@@ -181,6 +191,13 @@ n=$(curl -s -m 60 -H "Authorization: Bearer $MK" -H 'Content-Type: application/j
 
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "$UI/health")
 [ "$code" = 200 ] && ok "OpenWebUI is serving" || no "OpenWebUI is serving" "HTTP $code"
+
+# On GCP the platform IAM check may be off, which makes Open WebUI's own
+# login the only thing in front of the UI. Prove it rejects anonymous calls.
+code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "$UI/api/v1/auths/")
+[ "$code" = 401 ] || [ "$code" = 403 ] \
+  && ok "OpenWebUI rejects anonymous API calls (HTTP $code)" \
+  || no "OpenWebUI anonymous access" "expected 401/403 on /api/v1/auths/, got $code"
 
 picker=$(curl -s -m 20 -H "Authorization: Bearer $TOKEN" "$UI/api/models" \
   | python3 -c 'import sys,json;print(",".join(sorted(m["id"] for m in json.load(sys.stdin)["data"])))' 2>/dev/null)

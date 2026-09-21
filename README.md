@@ -198,24 +198,36 @@ APIs → IAM → Cloud SQL → secrets
    → make provision
 ```
 
-### This organization forbids public Cloud Run services
+### Exposing the UI under domain restricted sharing
 
-An org policy blocks `allUsers` on Cloud Run (domain restricted sharing), so
-**neither service can be made public**. Both are IAM-protected, and every
-caller must present a Google identity token for the service's audience. That
-is a stronger posture than public + API key — two independent layers — but it
-shapes the design:
+This organization's policy refuses an `allUsers` IAM binding, so the usual
+`--allow-unauthenticated` fails with *"One or more users named in the policy
+do not belong to a permitted customer"*. That does **not** mean a service
+cannot be reached publicly: `--no-invoker-iam-check` turns Cloud Run's
+platform check off without any policy binding, and that is allowed.
+
+The two services are treated differently on purpose:
+
+| | invoker IAM check | What gates it |
+|---|---|---|
+| open-webui | **disabled** | its own login, `DEFAULT_USER_ROLE=pending` |
+| litellm | **enabled** | IAM *and* a LiteLLM virtual key |
+
+With the platform check off, Open WebUI's own login is the only thing in
+front of the UI, so `make smoke` asserts it actually rejects anonymous API
+calls. Set `GCP_OPENWEBUI_PUBLIC=false` to keep the check and reach the UI
+through `gcloud run services proxy` instead; for real users in front of the
+internet, an external HTTPS load balancer with IAP is the better answer.
+
+The gateway keeps its IAM check, which has two consequences:
 
 - **Open WebUI cannot mint identity tokens**, so it reaches the gateway
   through an `auth-proxy` sidecar on `localhost:4000` that signs each call
   with the runtime service account.
-- **Reaching the UI** needs an authenticated tunnel:
-  `gcloud run services proxy open-webui --region europe-west1`. For real
-  users, put an external HTTPS load balancer with IAP in front — that is the
-  sanctioned pattern under this policy.
-- **`make provision` and `make smoke` open those tunnels automatically**, so
-  both work unchanged against either target. Without the tunnel the
-  application's own bearer token would collide with the platform one.
+- **`make provision` and `make smoke` open an authenticated tunnel** to the
+  gateway automatically (and to the UI too, if its check is enabled), so both
+  run unchanged against either target. Without it the application's own
+  bearer token would collide with the platform one.
 
 ### The auth-proxy sidecar
 
@@ -256,7 +268,8 @@ an A2A agent itself.
 - **Redis is not deployed.** It only backed cross-worker rate limiting, and
   Cloud Run scales by instance. Add Memorystore if you need limits to hold
   across instances rather than per instance.
-- **Neither service is public** — the org policy forbids it. See above.
+- **The UI is reachable publicly, the gateway is not.** See above for how
+  that works under domain restricted sharing.
 - **The agent calls Vertex directly on Agent Runtime**, not through the
   gateway. Agent Runtime has no sidecar slot and the LiteLLM client cannot
   mint an identity token, so `AGENT_LLM_ROUTE=vertex` makes the agent use its
