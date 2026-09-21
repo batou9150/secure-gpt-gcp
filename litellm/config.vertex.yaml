@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# LiteLLM gateway (Vertex AI, EU multi-region) — the single egress point.
+#
+# EU data residency: requests are pinned to the `eu` multi-region and
+# authenticated with IAM, not a static API key.
+#
+# Note on locations: `eu` is a MULTI-REGION served by the plain
+# aiplatform.googleapis.com host (eu-aiplatform.googleapis.com does not
+# exist). Chat targets `eu` because single EU regions such as europe-west1
+# currently serve only the Gemini 2.5 family. Embeddings target europe-west1
+# for the LiteLLM reason noted below. Both stay inside the EU.
+#
+# Select with `make use-vertex`.
+#
+# `model_list` is an ALLOW-LIST. A model absent from this file cannot be
+# reached through the proxy, whatever a client asks for.
+# ---------------------------------------------------------------------------
+
+model_list:
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.8-flash
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: os.environ/VERTEX_LOCATION
+    model_info:
+      mode: chat
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: os.environ/VERTEX_LOCATION
+    model_info:
+      mode: chat
+      display_name: "gemini-flash"
+
+  # Cheapest chat model.
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash-lite
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: os.environ/VERTEX_LOCATION
+    model_info:
+      mode: chat
+      display_name: "gemini-flash-lite"
+
+  # Image generation, called through /chat/completions.
+  - model_name: gemini-3.1-flash-image
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-image
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: os.environ/VERTEX_LOCATION
+    model_info:
+      mode: chat
+      display_name: "nano banana 2"
+
+  - model_name: gemini-embedding-001
+    litellm_params:
+      model: vertex_ai/gemini-embedding-001
+      vertex_project: os.environ/VERTEX_PROJECT
+      # Embeddings use a single EU region, not the `eu` multi-region.
+      # LiteLLM's embedding handler derives the host as
+      # aiplatform.<loc>.rep.googleapis.com, which does not exist for `eu`
+      # (its chat handler is correct; the embedding one is not, and api_base
+      # is ignored there). europe-west1 keeps the data in the EU and builds a
+      # valid host. Revisit if LiteLLM fixes the multi-region case.
+      vertex_location: os.environ/VERTEX_EMBED_LOCATION
+    model_info:
+      mode: embedding
+
+litellm_settings:
+  turn_off_message_logging: true
+  redact_user_api_key_info: true
+  telemetry: false
+  drop_params: true
+  num_retries: 2
+  request_timeout: 600
+  cache: false
+  default_fallbacks: ["gemini-3.5-flash"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: false
+
+router_settings:
+  routing_strategy: simple-shuffle
+  redis_host: os.environ/REDIS_HOST
+  redis_port: os.environ/REDIS_PORT

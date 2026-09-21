@@ -1,0 +1,80 @@
+# ---------------------------------------------------------------------------
+# LiteLLM gateway (Google AI Studio) — the single egress point to Google.
+#
+# `model_list` is an ALLOW-LIST. A model absent from this file cannot be
+# reached through the proxy, whatever a client asks for.
+# ---------------------------------------------------------------------------
+
+model_list:
+  # Primary chat model.
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: chat
+
+  # Fallback + cheap utility model (OpenWebUI uses it for chat titles/tags).
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini/gemini-3.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: chat
+      display_name: "gemini-flash"
+
+  # Cheapest chat model.
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: chat
+      display_name: "gemini-flash-lite"
+
+  # Image generation, called through /chat/completions.
+  - model_name: gemini-3.1-flash-image
+    litellm_params:
+      model: gemini/gemini-3.1-flash-image
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: chat
+      display_name: "nano banana 2"
+
+  # Embeddings for document upload / RAG.
+  - model_name: gemini-embedding-001
+    litellm_params:
+      model: gemini/gemini-embedding-001
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: embedding
+
+litellm_settings:
+  # Do not write prompt or completion text to logs or the spend database.
+  # Spend and token counts are still recorded; message content is not.
+  turn_off_message_logging: true
+  redact_user_api_key_info: true
+
+  telemetry: false
+  drop_params: true          # silently drop params Gemini does not accept
+  num_retries: 2
+  request_timeout: 600
+
+  # Response caching is OFF: cached prompts would sit in Redis. Enable only
+  # if you accept that trade-off (see README).
+  cache: false
+
+  default_fallbacks: ["gemini-3.5-flash"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Persist virtual keys / teams / budgets created in the admin UI.
+  store_model_in_db: true
+  # Never persist prompt bodies alongside spend records.
+  store_prompts_in_spend_logs: false
+
+router_settings:
+  routing_strategy: simple-shuffle
+  # Redis backs cross-worker rate limiting so limits hold with >1 worker.
+  redis_host: os.environ/REDIS_HOST
+  redis_port: os.environ/REDIS_PORT

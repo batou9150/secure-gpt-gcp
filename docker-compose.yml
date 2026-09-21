@@ -1,0 +1,176 @@
+# ---------------------------------------------------------------------------
+# Secure GPT — OpenWebUI (chat UI) -> LiteLLM (policy gateway) -> Gemini
+#
+# The model provider is chosen by LITELLM_CONFIG in .env:
+#   ./litellm/config.aistudio.yaml  (default) — Google AI Studio, global endpoint
+#   ./litellm/config.vertex.yaml              — Vertex AI, pinned to a region
+#
+# Trust boundary: only the LiteLLM container holds the API key and talks to
+# Google. OpenWebUI never sees GEMINI_API_KEY.
+# Postgres and Redis sit on an `internal: true` network with no route off-box.
+# Published ports bind to 127.0.0.1 only.
+# ---------------------------------------------------------------------------
+
+name: secure-gpt
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: securegpt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: litellm
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securegpt -d litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt: [no-new-privileges:true]
+    <<: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt: [no-new-privileges:true]
+    <<: *logging
+
+  # The only service allowed to reach Google. Enforces auth, rate limits,
+  # budgets and model allow-listing.
+  litellm:
+    image: ghcr.io/berriai/litellm-database:main-stable
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY in .env}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?set LITELLM_SALT_KEY in .env}
+      DATABASE_URL: postgresql://securegpt:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # Credentials for whichever provider LITELLM_CONFIG selects. Both live
+      # here and nowhere else. The model allow-list is in the config file,
+      # not in the environment.
+      #   AI Studio -> GEMINI_API_KEY
+      #   Vertex AI -> secrets/gcp-credentials.json (+ project and region)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      VERTEX_PROJECT: ${VERTEX_PROJECT:-your-project-id}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-eu}
+      VERTEX_EMBED_LOCATION: ${VERTEX_EMBED_LOCATION:-europe-west1}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-credentials.json
+      GOOGLE_CLOUD_PROJECT: ${VERTEX_PROJECT:-your-project-id}
+      GOOGLE_CLOUD_QUOTA_PROJECT: ${VERTEX_PROJECT:-your-project-id}
+      # Admin UI credentials
+      UI_USERNAME: admin
+      UI_PASSWORD: ${LITELLM_UI_PASSWORD:?set LITELLM_UI_PASSWORD in .env}
+      # Privacy
+      LITELLM_DONT_SHOW_FEEDBACK_BOX: "true"
+      DO_NOT_TRACK: "1"
+      DISABLE_SCHEMA_UPDATE: "false"
+    volumes:
+      - ${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}:/app/config.yaml:ro
+      # Placeholder unless Vertex is selected; created by bootstrap.
+      - ./secrets/gcp-credentials.json:/app/gcp-credentials.json:ro
+    ports:
+      - "${LITELLM_BIND:-127.0.0.1:4000}:4000"
+    networks: [backend, egress]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness',timeout=5).status==200 else 1)\""]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 60s
+    security_opt: [no-new-privileges:true]
+    <<: *logging
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    depends_on:
+      litellm: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      # --- Storage -------------------------------------------------------
+      DATABASE_URL: postgresql://securegpt:${POSTGRES_PASSWORD}@postgres:5432/openwebui
+      REDIS_URL: redis://redis:6379/0
+
+      # --- Auth / access control -----------------------------------------
+      WEBUI_AUTH: "True"
+      WEBUI_SECRET_KEY: ${OPENWEBUI_SECRET_KEY:?set OPENWEBUI_SECRET_KEY in .env}
+      WEBUI_NAME: "Secure GPT"
+      ENABLE_SIGNUP: "True"          # first account becomes admin; see README
+      DEFAULT_USER_ROLE: "pending"   # every later signup needs admin approval
+      ENABLE_ADMIN_CHAT_ACCESS: "False"  # admins cannot read other users' chats
+      ENABLE_ADMIN_EXPORT: "False"
+      WEBUI_SESSION_COOKIE_SAME_SITE: "strict"
+      WEBUI_SESSION_COOKIE_SECURE: "False"  # set True once behind HTTPS
+
+      # --- Model access: LiteLLM is the ONLY backend ----------------------
+      ENABLE_OPENAI_API: "True"
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${OPENWEBUI_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
+      ENABLE_OLLAMA_API: "False"
+      ENABLE_DIRECT_CONNECTIONS: "False"  # users may not add their own endpoints
+      ENABLE_EVALUATION_ARENA_MODELS: "False"
+      # Only these appear in the chat model picker. The embedding model is
+      # reachable for RAG but is not selectable as a chat model.
+      OPENAI_API_CONFIGS: '{"0":{"enable":true,"model_ids":["gemini-3.8-flash","gemini-3.5-flash"]}}'
+      # Background tasks (chat titles, tags, search queries) use the cheap model.
+      TASK_MODEL_EXTERNAL: gemini-3.5-flash
+      TASK_MODEL: gemini-3.5-flash
+
+      # --- Close off third-party data egress ------------------------------
+      ENABLE_WEB_SEARCH: "False"
+      ENABLE_IMAGE_GENERATION: "False"
+      ENABLE_COMMUNITY_SHARING: "False"
+      ENABLE_AUTOCOMPLETE_GENERATION: "False"
+
+      # --- RAG stays inside the EU: embeddings go through LiteLLM ---------
+      RAG_EMBEDDING_ENGINE: "openai"
+      RAG_EMBEDDING_MODEL: ${EMBEDDING_MODEL:-gemini-embedding-001}
+      RAG_OPENAI_API_BASE_URL: http://litellm:4000/v1
+      RAG_OPENAI_API_KEY: ${OPENWEBUI_LITELLM_KEY:-${LITELLM_MASTER_KEY}}
+      AUDIO_STT_ENGINE: ""   # no local Whisper download, no external STT
+
+      # --- Telemetry off ---------------------------------------------------
+      ANONYMIZED_TELEMETRY: "False"
+      DO_NOT_TRACK: "1"
+      SCARF_NO_ANALYTICS: "True"
+      ENABLE_VERSION_UPDATE_CHECK: "False"
+      OFFLINE_MODE: "False"
+    volumes:
+      - openwebui-data:/app/backend/data
+    ports:
+      - "${OPENWEBUI_BIND:-127.0.0.1:3000}:8080"
+    networks: [backend, egress]
+    security_opt: [no-new-privileges:true]
+    <<: *logging
+
+networks:
+  # No route off the host. Postgres and Redis live here only.
+  backend:
+    internal: true
+  # Outbound to Vertex AI.
+  egress: {}
+
+volumes:
+  postgres-data: {}
+  openwebui-data: {}
