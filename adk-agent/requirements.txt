@@ -1,3 +1,0 @@
-google-adk[a2a]
-litellm
-uvicorn[standard]

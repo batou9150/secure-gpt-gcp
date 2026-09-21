@@ -155,16 +155,98 @@ docstring becomes a tool. Then:
 docker compose up -d --build adk-agent && make smoke
 ```
 
+## Deployment targets
+
+The same stack runs in two places. `local` is the default; every `make` verb
+dispatches to the active target, and `make target` says which that is.
+
+| | `make target-local` (default) | `make target-gcp` |
+|---|---|---|
+| Postgres | container | **Cloud SQL** (private IP, unix socket) |
+| LiteLLM | container | **Cloud Run**, ingress `internal` |
+| Open WebUI | container | **Cloud Run**, public (own auth) |
+| ADK agent | container | **Agent Runtime** (Agent Engine), A2A on |
+| Redis | container | not deployed (see below) |
+| Secrets | `.env`, mode 600 | **Secret Manager** |
+
+```sh
+make target-gcp     # switch
+make preflight      # read-only: credentials, APIs, what already exists
+make up             # deploy
+make smoke          # the same 27 checks, against Cloud Run
+make target-local   # switch back; the local stack is untouched
+```
+
+The target is recorded as `TARGET` in `.env`, so every later command agrees
+on where it is pointing. `make up`, `down`, `logs`, `ps`, `urls` and `nuke`
+all dispatch; `provision`, `smoke` and `creds` work against whichever target
+is active.
+
+### How the Google Cloud deploy is ordered
+
+The dependency is circular — the agent needs the gateway URL for its own LLM
+calls, and the gateway needs the agent's resource name. It is broken by
+deploying the gateway first and telling its sidecar about the agent
+afterwards, so the gateway's config never has to change:
+
+```
+APIs → IAM → Cloud SQL → secrets
+   → Cloud Run: litellm (+ A2A sidecar, agent not yet known)
+   → Agent Runtime: the ADK agent, given the gateway URL
+   → re-render litellm so the sidecar targets the agent
+   → Cloud Run: open-webui
+   → make provision
+```
+
+### The A2A auth sidecar
+
+Agent Runtime serves the agent's A2A endpoint behind
+`aiplatform.googleapis.com`, which needs a Google OAuth token that expires
+hourly. LiteLLM's A2A registry only accepts *static* credentials, so it
+cannot call Agent Runtime directly.
+
+`deploy/gcp/a2a-shim` closes that gap: a ~90-line process that runs as a
+**sidecar in the LiteLLM Cloud Run service**, listening on localhost only. It
+forwards the JSON-RPC body unchanged with a freshly minted token from the
+runtime service account. Because it is a sidecar, it is not reachable from
+outside the instance and the token never leaves it. On Google Cloud the
+gateway config's agent `url` becomes `http://localhost:8081`; everything else
+is identical to local. Delete it if LiteLLM ever mints Google credentials for
+an A2A agent itself.
+
+### Differences worth knowing
+
+- **Redis is not deployed.** It only backed cross-worker rate limiting, and
+  Cloud Run scales by instance. Add Memorystore if you need limits to hold
+  across instances rather than per instance.
+- **Open WebUI is public**, protected by its own login. Put it behind IAP or
+  a load balancer with Cloud Armor before exposing it widely.
+- **LiteLLM is never public**: ingress `internal`, reached by Open WebUI over
+  direct VPC egress.
+- **One runtime service account** (`secure-gpt-run`) for both Cloud Run
+  services and the agent, holding `cloudsql.client`,
+  `secretmanager.secretAccessor` and `aiplatform.user`. No provider API key
+  exists on the GCP path at all — Vertex is reached with that identity.
+- **`make down` scales to zero and stops the SQL instance**; it keeps data.
+  `make nuke` deletes everything and asks you to type the project id first.
+
+### Cost note
+
+Cloud SQL is the only component that bills while idle (`db-g1-small` by
+default, set by `GCP_SQL_TIER`). Cloud Run and Agent Runtime scale to zero.
+`make down` stops the SQL instance too.
+
 ## Quick start
 
 ```sh
 make bootstrap    # generates .env with random secrets, prompts for your API key
-make up           # starts the stack and provisions it
+make up           # starts the stack on the active target and provisions it
 make creds        # shows your admin login
-make smoke        # 16 end-to-end checks
+make smoke        # 27 end-to-end checks
 ```
 
-Then open <http://localhost:3000>.
+Then open <http://localhost:3000>. `make target-gcp` deploys the same stack to
+Google Cloud instead — see **Deployment targets** above.
 
 ## What "secure" means here
 
@@ -261,8 +343,10 @@ every field. The files that matter:
 
 | Path | Purpose |
 |---|---|
-| `docker-compose.yml` | services, networks, all OpenWebUI settings |
-| `adk-agent/` | the demo ADK agent served over A2A |
+| `docker-compose.yml` | the local target: services, networks, OpenWebUI settings |
+| `deploy/local/` | what each make verb does on the local target |
+| `deploy/gcp/` | the Google Cloud target: steps, service template, A2A sidecar |
+| `adk-agent/` | the demo ADK agent served over A2A (built identically on both targets) |
 | `litellm/config.vertex.yaml` | allow-list and policy, Vertex AI EU (default) |
 | `litellm/config.aistudio.yaml` | allow-list and policy, AI Studio |
 | `scripts/provision.sh` | issues scoped keys, creates admin, applies UI settings |

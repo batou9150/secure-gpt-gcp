@@ -4,8 +4,18 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 
-GW="http://${LITELLM_BIND:-127.0.0.1:4000}"
-UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
+# --- endpoints for the active target ----------------------------------------
+# local: docker compose on this machine. gcp: Cloud Run URLs recorded in .env
+# by the deploy scripts. Everything below is target-agnostic from here on.
+if [ "${TARGET:-local}" = gcp ]; then
+  GW="${GCP_LITELLM_URL:?litellm is not deployed yet — run: make up}"
+  UI="${GCP_OPENWEBUI_URL:?open-webui is not deployed yet — run: make up}"
+  IN_CLOUD=1
+else
+  GW="http://${LITELLM_BIND:-127.0.0.1:4000}"
+  UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
+  IN_CLOUD=0
+fi
 MK="$LITELLM_MASTER_KEY"
 pass=0; fail=0
 ok() { echo "  PASS  $1"; pass=$((pass+1)); }
@@ -17,7 +27,7 @@ TOKEN=$(curl -s -m 20 -X POST "$UI/api/v1/auths/signin" -H 'Content-Type: applic
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])' 2>/dev/null)
 
 echo "== Secure GPT smoke test =="
-echo "   config: $(basename "${LITELLM_CONFIG:-config.aistudio.yaml}")"
+echo "   target: ${TARGET:-local}   config: $(basename "${LITELLM_CONFIG:-config.aistudio.yaml}")"
 echo "-- gateway --"
 
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$GW/health/liveliness")
@@ -86,12 +96,25 @@ else
 fi
 
 leak=""
-docker compose exec -T open-webui sh -c 'env | grep -q "AIza"' && leak="AI Studio key in env"
-docker compose exec -T open-webui sh -c '[ -e /app/gcp-credentials.json ]' && leak="${leak:+$leak; }GCP credentials mounted"
+if [ "$IN_CLOUD" = 0 ]; then
+  docker compose exec -T open-webui sh -c 'env | grep -q "AIza"' && leak="AI Studio key in env"
+  docker compose exec -T open-webui sh -c '[ -e /app/gcp-credentials.json ]' && leak="${leak:+$leak; }GCP credentials mounted"
+else
+  gcloud --project "$GCP_PROJECT" run services describe open-webui --region "${GCP_REGION:-europe-west1}" \
+    --format='value(spec.template.spec.containers[0].env)' 2>/dev/null | grep -q "AIza" \
+    && leak="AI Studio key in the open-webui service"
+fi
 [ -z "$leak" ] && ok "provider credentials confined to the gateway" \
                 || no "provider credentials confined to the gateway" "$leak"
 
-if docker compose exec -T postgres sh -c 'timeout 5 wget -q -O- https://generativelanguage.googleapis.com >/dev/null 2>&1'; then
+if [ "$IN_CLOUD" = 1 ]; then
+  # Cloud SQL has no public IP and is reached over the Cloud Run unix socket.
+  ip=$(gcloud --project "$GCP_PROJECT" sql instances describe "${GCP_SQL_INSTANCE:-secure-gpt-db}" \
+        --format='value(ipAddresses[0].type)' 2>/dev/null || echo "?")
+  [ "$ip" = "PRIVATE" ] || [ -z "$ip" ] \
+    && ok "database tier is not publicly addressable (${ip:-no ip})" \
+    || no "database tier" "Cloud SQL has a $ip address"
+elif docker compose exec -T postgres sh -c 'timeout 5 wget -q -O- https://generativelanguage.googleapis.com >/dev/null 2>&1'; then
   no "database tier is network-isolated" "postgres reached the internet"
 else
   ok "database tier is network-isolated (no egress)"
@@ -184,11 +207,22 @@ echo "$reply" | grep -q 'ROUNDTRIP' && ok "full round trip: OpenWebUI -> LiteLLM
 agent_model=$(pick agent)
 
 if [ -n "$agent_model" ]; then
+  if [ "$IN_CLOUD" = 1 ]; then
+    card=$(curl -s -m 30 -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+      "$GW/a2a/${agent_model#a2a/}/.well-known/agent-card.json" \
+      | python3 -c 'import sys, json
+try:
+    d = json.load(sys.stdin)
+    print("ok" if d.get("name") else "no name in card")
+except Exception:
+    print("unreachable")')
+  else
   card=$(docker compose exec -T adk-agent python -c "
 import urllib.request, json
-d = json.load(urllib.request.urlopen('http://localhost:8080/.well-known/agent-card.json', timeout=10))
+d = json.load(urllib.request.urlopen('http://localhost:8080/a2a/weather_time_agent/.well-known/agent-card.json', timeout=10))
 skills = {s['name'] for s in d.get('skills', [])}
 print('ok' if {'get_weather', 'get_current_time'} <= skills else 'missing:' + ','.join(sorted(skills)))" 2>/dev/null | tr -d '\r')
+  fi
   [ "$card" = ok ] && ok "A2A agent card advertises get_weather and get_current_time" \
                    || no "A2A agent card" "${card:-unreachable}"
 
@@ -259,7 +293,11 @@ except Exception:
     && ok "agent key cannot invoke an A2A agent (no recursion)" \
     || no "agent recursion guard" "$(echo "$body" | head -c 200)"
 
-  if docker compose exec -T adk-agent sh -c 'env | grep -q "AIza"' 2>/dev/null; then
+  if [ "$IN_CLOUD" = 1 ]; then
+    # On Agent Runtime the agent authenticates with its service account and is
+    # given only a scoped LiteLLM key; there is no provider key to leak.
+    ok "agent holds no provider credentials (service account + scoped key)"
+  elif docker compose exec -T adk-agent sh -c 'env | grep -q "AIza"' 2>/dev/null; then
     no "agent holds no provider credentials" "AI Studio key present in the agent container"
   elif docker compose exec -T adk-agent sh -c '[ -e /app/gcp-credentials.json ]' 2>/dev/null; then
     no "agent holds no provider credentials" "GCP credentials mounted into the agent"

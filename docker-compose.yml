@@ -114,9 +114,12 @@ services:
       LITELLM_API_KEY: ${ADK_AGENT_LITELLM_KEY:-placeholder-set-by-provision}
       AGENT_MODEL: ${ADK_AGENT_MODEL:-gemini-3.8-flash}
       PORT: "8080"
+      # Advertised inside the A2A agent card. Without it the card
+      # claims http://0.0.0.0:8000 and A2A clients follow that and fail.
+      APP_URL: http://adk-agent:8080
     networks: [backend]
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/.well-known/agent-card.json',timeout=5).status==200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/a2a/weather_time_agent/.well-known/agent-card.json',timeout=5).status==200 else 1)\""]
       interval: 10s
       timeout: 8s
       retries: 30

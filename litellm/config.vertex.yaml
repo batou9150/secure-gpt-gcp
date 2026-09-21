@@ -111,5 +111,5 @@ agents:
     agent_card_params:
       name: "Weather & Time Agent"
       description: "Reports the weather and current time for a city."
-      url: "http://adk-agent:8080"
+      url: "http://adk-agent:8080/a2a/weather_time_agent"
       protocolVersion: "1.0"

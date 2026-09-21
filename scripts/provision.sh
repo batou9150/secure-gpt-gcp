@@ -17,8 +17,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 
-GW="http://${LITELLM_BIND:-127.0.0.1:4000}"
-UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
+# --- endpoints for the active target ----------------------------------------
+# local: docker compose on this machine. gcp: Cloud Run URLs recorded in .env
+# by the deploy scripts. Everything below is target-agnostic from here on.
+if [ "${TARGET:-local}" = gcp ]; then
+  GW="${GCP_LITELLM_URL:?litellm is not deployed yet — run: make up}"
+  UI="${GCP_OPENWEBUI_URL:?open-webui is not deployed yet — run: make up}"
+  IN_CLOUD=1
+else
+  GW="http://${LITELLM_BIND:-127.0.0.1:4000}"
+  UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
+  IN_CLOUD=0
+fi
 # The config file IS the allow-list; derive key scopes from it so the two
 # cannot drift and so this works for whichever provider is selected.
 CFG="${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}"
@@ -163,8 +173,12 @@ if [ -n "$AGENT_LLM_MODELS" ]; then
              "${AGENT_RPM_LIMIT:-300}" "${AGENT_PARALLEL:-10}" "ADK agent" \
              '"allowed_routes":["/v1/chat/completions","/chat/completions"]' 
   if [ "$before" != "$ADK_AGENT_LITELLM_KEY" ]; then
-    docker compose up -d adk-agent >/dev/null 2>&1 || true
-    say "ADK agent: restarted with its new key"
+    if [ "$IN_CLOUD" = 0 ]; then
+      docker compose up -d adk-agent >/dev/null 2>&1 || true
+      say "ADK agent: restarted with its new key"
+    else
+      say "ADK agent: re-run 'make up' to redeploy it with the new key"
+    fi
   fi
 fi
 

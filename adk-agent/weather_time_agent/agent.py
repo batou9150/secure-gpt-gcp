@@ -89,3 +89,7 @@ root_agent = Agent(
     ),
     tools=[get_weather, get_current_time],
 )
+
+from google.adk.apps import App
+
+app = App(root_agent=root_agent, name="weather_time_agent")

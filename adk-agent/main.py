@@ -1,18 +1,8 @@
-"""Serves the weather/time agent over the A2A protocol.
+"""Convenience entrypoint.
 
-LiteLLM's a2a provider POSTs JSON-RPC (`message/send` / `message/stream`) to
-this service's root URL and translates the result back into OpenAI-style
-chat completions for Open WebUI.
+The served application lives in ``weather_time_agent.fast_api_app`` so that the
+local container and Agent Runtime expose exactly the same routes: the ADK API,
+A2A at ``/a2a/weather_time_agent`` and the reasoning-engine passthrough.
 """
 
-import os
-
-from google.adk.a2a.utils.agent_to_a2a import to_a2a
-
-from weather_time_agent.agent import root_agent
-
-PORT = int(os.environ.get("PORT", "8080"))
-
-# to_a2a() returns an ASGI app exposing the agent card at
-# /.well-known/agent-card.json and the JSON-RPC endpoint at /.
-app = to_a2a(root_agent, port=PORT)
+from weather_time_agent.fast_api_app import app  # noqa: F401
