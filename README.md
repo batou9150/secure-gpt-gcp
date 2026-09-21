@@ -79,37 +79,56 @@ through the gateway on a virtual key that is scoped to the plain chat models
 and deliberately excludes A2A models, so an agent cannot invoke itself and
 recurse. `make smoke` asserts that.
 
-### Two ways in, and a streaming caveat
+### The agent is registered twice, on purpose
 
-Registering the agent under the top-level `agents:` key (the documented way)
-gives the native A2A surface on the proxy itself:
+An A2A agent needs **both** entries, and they do different jobs.
+
+`agents:` (top level) registers the agent with the proxy. That is what gives
+the native A2A surface and an agent identity that keys and spend attach to:
 
 ```
 POST /a2a/weather-time-agent                              JSON-RPC passthrough
 GET  /a2a/weather-time-agent/.well-known/agent-card.json  discovery
-POST /v1/a2a/discover                                     list agents
+POST /v1/a2a/discover                                     admin only
 ```
 
-Authenticate those with `x-litellm-api-key: Bearer <virtual key>`, which
-LiteLLM prefers over `Authorization` when the inbound header might carry a
-token meant for the agent itself.
+`model_list` bridges that agent to `/v1/chat/completions` so Open WebUI can
+treat it as a model. **This is required** — registering under `agents:` alone
+does *not* expose the agent as a model; without the `model_list` entry it
+vanishes from `/v1/models` and a chat call returns *400 Invalid model name*.
+So seeing `a2a/weather-time-agent` in the models list is expected, not
+duplication.
+
+**Keep `api_base` on the model_list entry.** Without it the bridge resolves
+the address from the registry's agent card — whose `url` is LiteLLM's own
+proxy endpoint — so the call loops back into the proxy instead of reaching
+the agent. That failure is quiet: you get a fluent, plausible answer from a
+plain LLM with no tool call.
+
+### "Needs Setup" in the Agents page
+
+The LiteLLM UI marks an agent **Active** only when at least one virtual key
+is bound to it through the key's `agent_id` column; otherwise it shows
+**Needs Setup**. That binding is separate from `object_permission.agents`,
+which is about *permission* rather than ownership. `provision.sh` issues one
+`agent_id`-bound key per registered agent, which also gives the agent its own
+spend line and is the key direct A2A clients should use.
+
+### Agent access control
+
+Authenticate the native endpoints with `x-litellm-api-key: Bearer <key>`,
+which LiteLLM prefers over `Authorization` when the inbound header might
+carry a token meant for the agent itself.
 
 **The native endpoint does not apply a key's model allow-list.** It
 authenticates the key, but the `models` scope that governs
-`/v1/chat/completions` is not checked there, so a key with no access to the
-agent's model can still invoke it over `/a2a/{agent}`. The ADK agent's own
-key is therefore also pinned with `allowed_routes` to the chat route, which
-*is* enforced on every route; without that the no-recursion guarantee would
-hold on the chat bridge but not here. `make smoke` asserts the 403.
-
-The `model_list` entry bridges the *same* agent to `/v1/chat/completions` so
-Open WebUI can treat it as a model.
-
-**Keep `api_base` on that model_list entry.** Without it the bridge resolves
-the address from the registry's agent card — whose `url` is LiteLLM's own
-proxy endpoint — so the call loops back into the proxy instead of reaching
-the agent, and you silently get a plain LLM answer with no tool use. That
-failure is quiet: the reply looks plausible, it just isn't the agent.
+`/v1/chat/completions` is not checked there — so by default *any* valid
+virtual key can invoke *any* registered agent over `/a2a/{agent}`, including
+keys that were deliberately scoped away from it. `provision.sh` therefore
+pins every other key with `allowed_routes`, which *is* enforced on every
+route, leaving the agent-bound key as the only one that can use it. Open
+WebUI is unaffected: it reaches the agent through the chat bridge, never
+through `/a2a/`. `make smoke` asserts the 403s.
 
 **Streaming.** The native passthrough above streams correctly. The
 chat-completions *bridge* does not: it calls the agent with `message/stream`
@@ -159,7 +178,8 @@ Concretely, the controls that are in place and verified by `make smoke`:
 | No third-party egress from the UI | Web search, image generation, community sharing, external STT and direct user-defined connections are all disabled. |
 | Telemetry off | Across OpenWebUI, LiteLLM and Scarf. |
 | Agents are credential-free | The ADK agent gets a scoped virtual key, never a Google credential. |
-| Agents cannot recurse | The agent's key excludes A2A models *and* is pinned via `allowed_routes` to the chat route, closing the native `/a2a/{agent}` path too. |
+| Agents cannot recurse | The agent's key excludes A2A models *and* is route-pinned to the chat route, closing the native `/a2a/{agent}` path too. |
+| Agent endpoints are not open | The native `/a2a/{agent}` route ignores a key's model allow-list, so every key except the agent-bound one is pinned away from it. |
 
 ### Limits you should know about
 

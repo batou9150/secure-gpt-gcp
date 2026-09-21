@@ -95,14 +95,14 @@ ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL [EXTRA_JSON
   local var=$1 alias=$2 models=$3 rpm=$4 par=$5 label=$6 extra="${7:-}"
   local cur="${!var:-}"
   if key_valid "$cur"; then
-    if [ "$(scope_of "$cur")" = "$(plain "$models")" ]; then
-      say "$label key: reusing existing"
-      return
-    fi
+    # Always push the desired shape rather than only on model drift: limits
+    # and allowed_routes can change too, and /key/update is idempotent.
+    local drift=""
+    [ "$(scope_of "$cur")" = "$(plain "$models")" ] || drift=" (models re-scoped)"
     curl -s -o /dev/null -m 30 -X POST "$GW/key/update" \
       -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
       -d "{\"key\":\"$cur\",\"models\":[$models],\"rpm_limit\":$rpm,\"max_parallel_requests\":$par${extra:+,$extra}}"
-    say "$label key: scope re-synced to the allow-list"
+    say "$label key: synced${drift}"
     return
   fi
   local k; k=$(mint "$alias" "$models" "$rpm" "$par" "$extra")
@@ -111,8 +111,44 @@ ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL [EXTRA_JSON
   say "$label key: issued (${rpm} rpm, ${par} parallel)"
 }
 
-ensure_key OPENWEBUI_CHAT_KEY  open-webui-chat  "$CHAT_MODELS"  "$CHAT_RPM_LIMIT"  "$CHAT_PARALLEL"  chat
-ensure_key OPENWEBUI_EMBED_KEY open-webui-embed "$EMBED_MODELS" "$EMBED_RPM_LIMIT" "$EMBED_PARALLEL" embedding
+# Every virtual key that has no business reaching an agent is pinned away
+# from the A2A routes. The native /a2a/{agent} endpoint authenticates a key
+# but does NOT apply its model allow-list, so without this any valid key
+# could invoke any registered agent.
+CHAT_ROUTES='"allowed_routes":["/v1/models","/models","/v1/chat/completions","/chat/completions"]'
+EMBED_ROUTES='"allowed_routes":["/v1/models","/models","/v1/embeddings","/embeddings"]'
+
+ensure_key OPENWEBUI_CHAT_KEY  open-webui-chat  "$CHAT_MODELS"  "$CHAT_RPM_LIMIT"  "$CHAT_PARALLEL"  chat "$CHAT_ROUTES"
+ensure_key OPENWEBUI_EMBED_KEY open-webui-embed "$EMBED_MODELS" "$EMBED_RPM_LIMIT" "$EMBED_PARALLEL" embedding "$EMBED_ROUTES"
+
+# A key bound to the agent via agent_id. This is what the Agents page in the
+# LiteLLM UI counts: with none, the agent shows "Needs Setup". It also gives
+# the agent its own spend line, and is the key direct A2A clients should use.
+AGENT_IDS=$(curl -s -m 20 -H "Authorization: Bearer $LITELLM_MASTER_KEY" "$GW/v1/agents" \
+  | python3 -c 'import sys, json
+try:
+    print(" ".join(a["agent_name"] + "=" + a["agent_id"] for a in json.load(sys.stdin)))
+except Exception:
+    print("")')
+for pair in $AGENT_IDS; do
+  aname="${pair%%=*}"; aid="${pair##*=}"
+  var="A2A_KEY_$(printf '%s' "$aname" | tr 'a-z-' 'A-Z_')"
+  cur="${!var:-}"
+  if key_valid "$cur"; then
+    say "agent key ($aname): reusing existing"
+  else
+    k=$(curl -s -m 30 -X POST "$GW/key/generate" \
+      -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
+      -d "{\"key_alias\":\"a2a-$aname-$(date +%s)\",\"agent_id\":\"$aid\",\"models\":[\"$aname\"]}" \
+      | jqp 'd.get("key","")')
+    if [ -n "$k" ]; then
+      put_env "$var" "$k"; printf -v "$var" '%s' "$k"
+      say "agent key ($aname): issued and bound to agent_id"
+    else
+      say "agent key ($aname): could not be issued"
+    fi
+  fi
+done
 
 # The ADK agent calls the gateway for its own reasoning. Its key deliberately
 # excludes A2A models so it cannot call itself back through the gateway.

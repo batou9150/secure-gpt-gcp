@@ -206,20 +206,42 @@ except Exception: print("")')
   [ -n "$cardname" ] && ok "LiteLLM serves the agent card (\"$cardname\")" \
                      || no "LiteLLM agent card" "no card at /a2a/$agent_model/.well-known/agent-card.json"
 
+  # The agent-bound key (agent_id) is the one meant for direct A2A clients.
+  akey_var="A2A_KEY_$(printf '%s' "$agent_model" | tr 'a-z-' 'A-Z_')"
+  akey="${!akey_var:-}"
   rpc=$(curl -s -m 240 -X POST "$GW/a2a/$agent_model" \
-    -H "x-litellm-api-key: Bearer $OPENWEBUI_CHAT_KEY" -H 'Content-Type: application/json' \
+    -H "x-litellm-api-key: Bearer $akey" -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"Weather in Tokyo?"}]}}}')
   echo "$rpc" | grep -qi 'tokyo' \
-    && ok "native A2A JSON-RPC passthrough works" \
+    && ok "native A2A JSON-RPC passthrough works (agent-bound key)" \
     || no "native A2A passthrough" "$(echo "$rpc" | head -c 200)"
 
-  # A key with no access must be refused at the agent endpoint too.
-  denied=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "$GW/a2a/$agent_model" \
-    -H "x-litellm-api-key: Bearer $ADK_AGENT_LITELLM_KEY" -H 'Content-Type: application/json' \
-    -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"hi"}]}}}')
-  [ "$denied" = 403 ] || [ "$denied" = 401 ] \
-    && ok "native A2A endpoint enforces per-key agent access (HTTP $denied)" \
-    || no "native A2A access control" "expected 401/403 for the agent's own key, got $denied"
+  # The native endpoint authenticates a key but does not apply its model
+  # allow-list, so every key that has no business there is route-pinned away.
+  reachable=""
+  for kv in OPENWEBUI_CHAT_KEY OPENWEBUI_EMBED_KEY ADK_AGENT_LITELLM_KEY; do
+    kval="${!kv:-}"; [ -n "$kval" ] || continue
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 40 -X POST "$GW/a2a/$agent_model" \
+      -H "x-litellm-api-key: Bearer $kval" -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"hi"}]}}}')
+    [ "$code" = 403 ] || [ "$code" = 401 ] || reachable="${reachable:+$reachable }$kv($code)"
+  done
+  [ -z "$reachable" ] \
+    && ok "only the agent-bound key may use the native A2A endpoint" \
+    || no "native A2A access control" "also reachable by: $reachable"
+
+  # A bound key is what the LiteLLM Agents page counts; with none it shows
+  # the agent as "Needs Setup".
+  bound=$(curl -s -m 20 -H "Authorization: Bearer $LITELLM_MASTER_KEY" "$GW/v1/agents" \
+    | python3 -c 'import sys, json
+try:
+    a = json.load(sys.stdin)[0]
+    print(len(a.get("keys") or []))
+except Exception:
+    print(0)')
+  [ "${bound:-0}" -ge 1 ] 2>/dev/null \
+    && ok "agent has $bound bound key(s) — shows as Active, not Needs Setup" \
+    || no "agent binding" "no key bound via agent_id; UI will show Needs Setup"
 
   # The agent reasons through the gateway, so its key must not be able to
   # reach an A2A model — otherwise it could call itself and recurse.
