@@ -101,12 +101,36 @@ services:
     security_opt: [no-new-privileges:true]
     <<: *logging
 
+  # Demo ADK agent (weather + time), spoken to over the A2A protocol.
+  # It holds no provider credentials: its own LLM calls go back out through
+  # the gateway on a scoped virtual key, so LiteLLM stays the single egress.
+  adk-agent:
+    build: ./adk-agent
+    restart: unless-stopped
+    depends_on:
+      litellm: { condition: service_healthy }
+    environment:
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      LITELLM_API_KEY: ${ADK_AGENT_LITELLM_KEY:-placeholder-set-by-provision}
+      AGENT_MODEL: ${ADK_AGENT_MODEL:-gemini-3.8-flash}
+      PORT: "8080"
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/.well-known/agent-card.json',timeout=5).status==200 else 1)\""]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 40s
+    security_opt: [no-new-privileges:true]
+    <<: *logging
+
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     restart: unless-stopped
     depends_on:
       litellm: { condition: service_healthy }
       postgres: { condition: service_healthy }
+      adk-agent: { condition: service_healthy }
     environment:
       # --- Storage -------------------------------------------------------
       DATABASE_URL: postgresql://securegpt:${POSTGRES_PASSWORD}@postgres:5432/openwebui

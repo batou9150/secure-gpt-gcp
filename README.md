@@ -35,21 +35,68 @@ multi-region is served by the plain `aiplatform.googleapis.com` host.
 ```
   browser                  docker                                    internet
   ───────                  ──────                                    ────────
-                  ┌──────────────────────────────────────┐
-  :3000 ─────────►│  open-webui      chat UI, users, RAG  │
-                  │      │                                │
-                  │      │ scoped virtual keys            │
-                  │      ▼                                │
-  :4000 ─────────►│  litellm         allow-list, quotas,  │──────► AI Studio
-   (admin)        │      │           spend, redaction     │        Gemini 3.8
-                  │      ▼                                │
-                  │  postgres  redis   ← no egress        │
-                  └──────────────────────────────────────┘
+                  ┌────────────────────────────────────────┐
+  :3000 ─────────►│  open-webui      chat UI, users, RAG    │
+                  │      │                                  │
+                  │      │ scoped virtual keys              │
+                  │      ▼                                  │
+  :4000 ─────────►│  litellm    allow-list, quotas, spend,  │──────► Vertex AI
+   (admin)        │      │      redaction, A2A gateway      │        (EU)
+                  │      │ ▲                                │
+                  │ A2A  │ │ its own LLM calls come back    │
+                  │ JSON │ │ through the gateway            │
+                  │ -RPC ▼ │                                │
+                  │  adk-agent   weather + time tools       │
+                  │                                         │
+                  │  postgres  redis   ← no egress          │
+                  └────────────────────────────────────────┘
 ```
 
 Only `litellm` holds the Gemini API key, and only `litellm` and `open-webui`
 can reach the internet. `postgres` and `redis` sit on an `internal: true`
 Docker network with no route off the host.
+
+## The demo agent
+
+`adk-agent` is a small [ADK](https://adk.dev) agent with two tools,
+`get_weather` and `get_current_time`, for a handful of cities. It is served
+over the **A2A protocol** and appears in the model picker as
+**Weather & Time Agent**.
+
+LiteLLM is the A2A gateway. Open WebUI sends an ordinary OpenAI-style
+`/v1/chat/completions` request naming the model `weather-time-agent`; LiteLLM
+maps it to A2A JSON-RPC (`message/send`) against the agent, and translates
+the reply back:
+
+```
+open-webui ──OpenAI /v1/chat/completions──► litellm ──A2A JSON-RPC──► adk-agent
+                                                                          │
+                            gemini-3.8-flash on Vertex EU ◄── litellm ◄───┘
+```
+
+The agent holds **no Google credentials**. Its own reasoning calls go back out
+through the gateway on a virtual key that is scoped to the plain chat models
+and deliberately excludes A2A models, so an agent cannot invoke itself and
+recurse. `make smoke` asserts that.
+
+### Streaming caveat
+
+LiteLLM's A2A provider does not perform the upstream call when `stream=true` —
+it returns only a terminal chunk, so a streamed reply arrives empty. The
+non-streaming path is correct. The config therefore marks this model
+`supports_native_streaming: false`, and `provision.sh` sets `stream_response:
+false` on its Open WebUI entry so the UI requests it without streaming. The
+answer appears in one go instead of token by token. Remove both once upstream
+handles the streamed case.
+
+### Adding tools
+
+Edit `adk-agent/weather_time_agent/agent.py` — a plain Python function with a
+docstring becomes a tool. Then:
+
+```sh
+docker compose up -d --build adk-agent && make smoke
+```
 
 ## Quick start
 
@@ -80,6 +127,7 @@ Concretely, the controls that are in place and verified by `make smoke`:
 | Admins cannot read chats | `ENABLE_ADMIN_CHAT_ACCESS=False`. |
 | No third-party egress from the UI | Web search, image generation, community sharing, external STT and direct user-defined connections are all disabled. |
 | Telemetry off | Across OpenWebUI, LiteLLM and Scarf. |
+| Agents are credential-free | The ADK agent gets a scoped virtual key, never a Google credential, and its key excludes A2A models so it cannot recurse. |
 
 ### Limits you should know about
 
@@ -155,6 +203,7 @@ every field. The files that matter:
 | Path | Purpose |
 |---|---|
 | `docker-compose.yml` | services, networks, all OpenWebUI settings |
+| `adk-agent/` | the demo ADK agent served over A2A |
 | `litellm/config.vertex.yaml` | allow-list and policy, Vertex AI EU (default) |
 | `litellm/config.aistudio.yaml` | allow-list and policy, AI Studio |
 | `scripts/provision.sh` | issues scoped keys, creates admin, applies UI settings |

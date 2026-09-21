@@ -25,10 +25,21 @@ CFG="${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}"
 models_of() {
   python3 -c 'import sys,yaml
 d=yaml.safe_load(open(sys.argv[1]))
-print(",".join("\"%s\"" % m["model_name"] for m in d["model_list"] if m["model_info"]["mode"]==sys.argv[2]))' "$CFG" "$1"
+want=sys.argv[2]
+out=[]
+for m in d["model_list"]:
+    mode=m["model_info"]["mode"]
+    is_a2a=str(m["litellm_params"]["model"]).startswith("a2a/")
+    if want=="chat" and mode=="chat": out.append(m["model_name"])
+    elif want=="embedding" and mode=="embedding": out.append(m["model_name"])
+    # chat models an agent may call: excludes A2A agents, so an agent cannot
+    # invoke itself (or another agent) and recurse through the gateway.
+    elif want=="agent_llm" and mode=="chat" and not is_a2a: out.append(m["model_name"])
+print(",".join("\"%s\"" % n for n in out))' "$CFG" "$1"
 }
 CHAT_MODELS=$(models_of chat)
 EMBED_MODELS=$(models_of embedding)
+AGENT_LLM_MODELS=$(models_of agent_llm)
 [ -n "$CHAT_MODELS" ] && [ -n "$EMBED_MODELS" ] || { echo "  ERROR: could not read the allow-list from $CFG"; exit 1; }
 
 say() { printf '  %s\n' "$*"; }
@@ -103,6 +114,18 @@ ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL
 ensure_key OPENWEBUI_CHAT_KEY  open-webui-chat  "$CHAT_MODELS"  "$CHAT_RPM_LIMIT"  "$CHAT_PARALLEL"  chat
 ensure_key OPENWEBUI_EMBED_KEY open-webui-embed "$EMBED_MODELS" "$EMBED_RPM_LIMIT" "$EMBED_PARALLEL" embedding
 
+# The ADK agent calls the gateway for its own reasoning. Its key deliberately
+# excludes A2A models so it cannot call itself back through the gateway.
+if [ -n "$AGENT_LLM_MODELS" ]; then
+  before="${ADK_AGENT_LITELLM_KEY:-}"
+  ensure_key ADK_AGENT_LITELLM_KEY adk-agent "$AGENT_LLM_MODELS" \
+             "${AGENT_RPM_LIMIT:-300}" "${AGENT_PARALLEL:-10}" "ADK agent"
+  if [ "$before" != "$ADK_AGENT_LITELLM_KEY" ]; then
+    docker compose up -d adk-agent >/dev/null 2>&1 || true
+    say "ADK agent: restarted with its new key"
+  fi
+fi
+
 # --- 2. admin account ------------------------------------------------------
 TOKEN=$(curl -s -m 30 -X POST "$UI/api/v1/auths/signin" -H 'Content-Type: application/json' \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" | jqp 'd.get("token","")' 2>/dev/null || true)
@@ -143,7 +166,8 @@ import json, sys, urllib.request, urllib.error, yaml
 
 cfg, ui, token = sys.argv[1], sys.argv[2], sys.argv[3]
 models = yaml.safe_load(open(cfg))["model_list"]
-wanted = [(m["model_name"], m["model_info"]["display_name"])
+wanted = [(m["model_name"], m["model_info"]["display_name"],
+           m["model_info"].get("supports_native_streaming", True))
           for m in models if m["model_info"].get("display_name")]
 
 def call(path, payload):
@@ -156,13 +180,20 @@ def call(path, payload):
     except urllib.error.HTTPError as e:
         return e.code, e.read()[:200]
 
-for mid, name in wanted:
+for mid, name, native_stream in wanted:
+    # LiteLLM's A2A provider does not perform the upstream call when
+    # stream=true (it returns only a terminal chunk), so models declaring
+    # supports_native_streaming: false are marked non-streaming here and
+    # Open WebUI requests them without streaming.
+    params = {} if native_stream else {"stream_response": False}
     body = {"id": mid, "name": name, "base_model_id": None,
-            "meta": {"description": None}, "params": {}, "is_active": True}
+            "meta": {"description": None}, "params": params, "is_active": True}
     code, _ = call("/api/v1/models/create", body)
     if code != 200:
         code, _ = call("/api/v1/models/model/update?id=" + urllib.parse.quote(mid), body)
-    print("  display name: %-24s -> %r%s" % (mid, name, "" if code == 200 else " (FAILED %s)" % code))
+    note = "" if native_stream else " [non-streaming]"
+    print("  display name: %-24s -> %r%s%s" % (
+        mid, name, note, "" if code == 200 else " (FAILED %s)" % code))
 PY
 
 echo

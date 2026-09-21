@@ -169,6 +169,51 @@ reply=$(curl -s -m 120 -X POST "$UI/api/chat/completions" -H "Authorization: Bea
 echo "$reply" | grep -q 'ROUNDTRIP' && ok "full round trip: OpenWebUI -> LiteLLM -> Gemini" \
                                     || no "full round trip" "$(echo "$reply"|head -c 300)"
 
+# --- A2A agent ------------------------------------------------------------
+agent_model=$(python3 -c '
+import sys,yaml
+d=yaml.safe_load(open(sys.argv[1]))
+print(next((m["model_name"] for m in d["model_list"]
+            if str(m["litellm_params"]["model"]).startswith("a2a/")), ""))' "$CFG")
+
+if [ -n "$agent_model" ]; then
+  card=$(docker compose exec -T adk-agent python -c "
+import urllib.request, json
+d = json.load(urllib.request.urlopen('http://localhost:8080/.well-known/agent-card.json', timeout=10))
+skills = {s['name'] for s in d.get('skills', [])}
+print('ok' if {'get_weather', 'get_current_time'} <= skills else 'missing:' + ','.join(sorted(skills)))" 2>/dev/null | tr -d '\r')
+  [ "$card" = ok ] && ok "A2A agent card advertises get_weather and get_current_time" \
+                   || no "A2A agent card" "${card:-unreachable}"
+
+  # OpenAI-style request in, A2A JSON-RPC to the agent, OpenAI-style out.
+  rep=$(curl -s -m 240 -H "Authorization: Bearer $OPENWEBUI_CHAT_KEY" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$agent_model\",\"messages\":[{\"role\":\"user\",\"content\":\"Weather and time in Paris?\"}]}" \
+    "$GW/v1/chat/completions" \
+    | python3 -c 'import sys,json
+try: print(json.load(sys.stdin)["choices"][0]["message"]["content"])
+except Exception: print("")')
+  echo "$rep" | grep -qi 'paris' && echo "$rep" | grep -qiE 'cloudy|°C' \
+    && ok "A2A round trip: OpenAI in -> JSON-RPC -> agent tools -> OpenAI out" \
+    || no "A2A round trip" "reply: $(echo "$rep" | head -c 200)"
+
+  # The agent reasons through the gateway, so its key must not be able to
+  # reach an A2A model — otherwise it could call itself and recurse.
+  body=$(curl -s -m 30 -H "Authorization: Bearer $ADK_AGENT_LITELLM_KEY" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$agent_model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+    "$GW/v1/chat/completions")
+  echo "$body" | grep -q 'key_model_access_denied' \
+    && ok "agent key cannot invoke an A2A agent (no recursion)" \
+    || no "agent recursion guard" "$(echo "$body" | head -c 200)"
+
+  if docker compose exec -T adk-agent sh -c 'env | grep -q "AIza"' 2>/dev/null; then
+    no "agent holds no provider credentials" "AI Studio key present in the agent container"
+  elif docker compose exec -T adk-agent sh -c '[ -e /app/gcp-credentials.json ]' 2>/dev/null; then
+    no "agent holds no provider credentials" "GCP credentials mounted into the agent"
+  else
+    ok "agent holds no provider credentials (only a scoped virtual key)"
+  fi
+fi
+
 tmp=$(mktemp /tmp/sgpt-rag-XXXX.txt)
 echo "The rollback window for project BLUE HERON is fifteen minutes and needs two approvers." > "$tmp"
 FID=$(curl -s -m 180 -X POST "$UI/api/v1/files/" -H "Authorization: Bearer $TOKEN" -F "file=@$tmp" \

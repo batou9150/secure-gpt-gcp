@@ -54,6 +54,25 @@ model_list:
       mode: chat
       display_name: "nano banana 2"
 
+  # The demo ADK agent, reached over A2A. LiteLLM accepts an OpenAI-style
+  # /v1/chat/completions call for this model, maps it to A2A JSON-RPC
+  # (message/send or message/stream) against api_base, and translates the
+  # agent's reply back. mode is "chat" so Open WebUI treats it as a model.
+  - model_name: weather-time-agent
+    litellm_params:
+      model: a2a/weather-time-agent
+      api_base: http://adk-agent:8080
+    model_info:
+      mode: chat
+      display_name: "Weather & Time Agent"
+      # LiteLLM's A2A streaming iterator does not pick up the text from ADK's
+      # status-update events, so a streamed call returns an empty message
+      # (the non-streaming path is correct). Declaring no native streaming
+      # makes LiteLLM call the agent with message/send and synthesise the SSE
+      # stream for Open WebUI, which streams by default. Revisit if upstream
+      # fixes the iterator.
+      supports_native_streaming: false
+
   - model_name: gemini-embedding-001
     litellm_params:
       model: vertex_ai/gemini-embedding-001
