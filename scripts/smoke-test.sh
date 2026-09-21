@@ -203,6 +203,15 @@ if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   [ -n "${OAUTH_ALLOWED_DOMAINS:-}" ] && [ "${OAUTH_ALLOWED_DOMAINS}" != "*" ] \
     && ok "OAuth restricted to: ${OAUTH_ALLOWED_DOMAINS}" \
     || no "OAuth domain restriction" "OAUTH_ALLOWED_DOMAINS is unset or '*' — any Google account could sign up"
+
+  # Ask Google directly whether it accepts this client + callback. Catches the
+  # commonest failure — an unregistered redirect URI — which otherwise only
+  # shows up as redirect_uri_mismatch when a user tries to sign in.
+  if out=$(./scripts/check-oauth-redirect.sh 2>/dev/null); then
+    ok "Google accepts the callback (${GOOGLE_REDIRECT_URI:-derived})"
+  else
+    no "Google callback registration" "$out — add it at console.cloud.google.com/auth/clients"
+  fi
 fi
 
 # On GCP the platform IAM check may be off, which makes Open WebUI's own
