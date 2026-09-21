@@ -22,19 +22,20 @@ UI="http://${OPENWEBUI_BIND:-127.0.0.1:3000}"
 # The config file IS the allow-list; derive key scopes from it so the two
 # cannot drift and so this works for whichever provider is selected.
 CFG="${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}"
+# A registered agent is exposed by LiteLLM as the model id "a2a/<agent_name>";
+# it is not (and need not be) in model_list.
 models_of() {
-  python3 -c 'import sys,yaml
-d=yaml.safe_load(open(sys.argv[1]))
-want=sys.argv[2]
-out=[]
-for m in d["model_list"]:
-    mode=m["model_info"]["mode"]
-    is_a2a=str(m["litellm_params"]["model"]).startswith("a2a/")
-    if want=="chat" and mode=="chat": out.append(m["model_name"])
-    elif want=="embedding" and mode=="embedding": out.append(m["model_name"])
-    # chat models an agent may call: excludes A2A agents, so an agent cannot
-    # invoke itself (or another agent) and recurse through the gateway.
-    elif want=="agent_llm" and mode=="chat" and not is_a2a: out.append(m["model_name"])
+  python3 -c 'import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+want = sys.argv[2]
+plain = [m["model_name"] for m in d["model_list"] if m["model_info"]["mode"] == "chat"]
+embed = [m["model_name"] for m in d["model_list"] if m["model_info"]["mode"] == "embedding"]
+agents = ["a2a/" + a["agent_name"] for a in (d.get("agents") or [])]
+out = {"chat": plain + agents,
+       "embedding": embed,
+       # What an agent itself may call. Excludes agents, so an agent cannot
+       # invoke itself (or another) and recurse through the gateway.
+       "agent_llm": plain}[want]
 print(",".join("\"%s\"" % n for n in out))' "$CFG" "$1"
 }
 CHAT_MODELS=$(models_of chat)
@@ -206,10 +207,15 @@ python3 - "$CFG" "$UI" "$TOKEN" <<'PY'
 import json, sys, urllib.request, urllib.error, yaml
 
 cfg, ui, token = sys.argv[1], sys.argv[2], sys.argv[3]
-models = yaml.safe_load(open(cfg))["model_list"]
+cfgd = yaml.safe_load(open(cfg))
 wanted = [(m["model_name"], m["model_info"]["display_name"],
            m["model_info"].get("supports_native_streaming", True))
-          for m in models if m["model_info"].get("display_name")]
+          for m in cfgd["model_list"] if m["model_info"].get("display_name")]
+# Agents are exposed as "a2a/<name>"; their label is agent_card_params.name.
+# The chat bridge cannot stream (see the config), so mark them non-streaming.
+for a in cfgd.get("agents") or []:
+    label = (a.get("agent_card_params") or {}).get("name") or a["agent_name"]
+    wanted.append(("a2a/" + a["agent_name"], label, False))
 
 def call(path, payload):
     req = urllib.request.Request(

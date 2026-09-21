@@ -28,14 +28,19 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$GW/v1/models")
                   || no "unauthenticated request rejected" "expected 401, got $code"
 
 CFG="${LITELLM_CONFIG:-./litellm/config.aistudio.yaml}"
-pick() { python3 -c 'import sys,yaml
-d=yaml.safe_load(open(sys.argv[1]))
-ms=d["model_list"]
-if sys.argv[2]=="all":   print(",".join(sorted(m["model_name"] for m in ms)))
-elif sys.argv[2]=="chat":print(",".join(sorted(m["model_name"] for m in ms if m["model_info"]["mode"]=="chat")))
-elif sys.argv[2]=="primary":print(next(m["model_name"] for m in ms if m["model_info"]["mode"]=="chat"))
-else:                    print(next(m["model_name"] for m in ms if m["model_info"]["mode"]=="embedding"))' "$CFG" "$1"; }
-want=$(pick all)
+pick() { python3 -c 'import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+ms = d["model_list"]
+agents = ["a2a/" + a["agent_name"] for a in (d.get("agents") or [])]
+chat = [m["model_name"] for m in ms if m["model_info"]["mode"] == "chat"] + agents
+what = sys.argv[2]
+if what == "all":       print(",".join(sorted(m["model_name"] for m in ms) + sorted(agents)))
+elif what == "chat":    print(",".join(sorted(chat)))
+elif what == "primary": print(next(m["model_name"] for m in ms if m["model_info"]["mode"] == "chat"))
+elif what == "agent":   print(agents[0] if agents else "")
+elif what == "plain":   print(",".join(sorted(m["model_name"] for m in ms)))
+else:                   print(next(m["model_name"] for m in ms if m["model_info"]["mode"] == "embedding"))' "$CFG" "$1"; }
+want=$(pick plain)
 want_chat=$(pick chat)
 an_embed=$(pick embed)
 # The PRIMARY chat model is the first one listed in the config, not the
@@ -44,7 +49,9 @@ a_chat=$(pick primary)
 
 models=$(curl -s -m 15 -H "Authorization: Bearer $MK" "$GW/v1/models" \
   | python3 -c 'import sys,json;print(",".join(sorted(m["id"] for m in json.load(sys.stdin)["data"])))' 2>/dev/null)
-[ "$models" = "$want" ] && ok "allow-list matches $(basename "$CFG"): $want" \
+# Agents are not in this list by design — LiteLLM adds them only for keys
+# scoped to them, which the picker check below covers.
+[ "$models" = "$want" ] && ok "allow-list matches $(basename "$CFG") model_list: $want" \
                         || no "allow-list" "config says [$want], gateway says [${models:-<none>}]"
 
 body=$(curl -s -m 20 -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
@@ -128,9 +135,11 @@ done
 dn_bad=$(python3 - "$CFG" "$UI" "$TOKEN" <<'PY'
 import json, sys, urllib.request, yaml
 cfg, ui, token = sys.argv[1], sys.argv[2], sys.argv[3]
+cfgd = yaml.safe_load(open(cfg))
 want = {m["model_name"]: m["model_info"]["display_name"]
-        for m in yaml.safe_load(open(cfg))["model_list"]
-        if m["model_info"].get("display_name")}
+        for m in cfgd["model_list"] if m["model_info"].get("display_name")}
+for a in cfgd.get("agents") or []:
+    want["a2a/" + a["agent_name"]] = (a.get("agent_card_params") or {}).get("name") or a["agent_name"]
 req = urllib.request.Request(ui + "/api/models", headers={"Authorization": "Bearer " + token})
 got = {m["id"]: m.get("name") for m in json.load(urllib.request.urlopen(req, timeout=20))["data"]}
 bad = [f"{k}: want {v!r} got {got.get(k)!r}" for k, v in want.items() if got.get(k) != v]
@@ -139,9 +148,11 @@ PY
 )
 if [ -z "$dn_bad" ]; then
   ok "display names match the config ($(python3 -c '
-import sys,yaml
-d=yaml.safe_load(open(sys.argv[1]))
-print(", ".join(m["model_info"]["display_name"] for m in d["model_list"] if m["model_info"].get("display_name")))' "$CFG"))"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+names = [m["model_info"]["display_name"] for m in d["model_list"] if m["model_info"].get("display_name")]
+names += [(a.get("agent_card_params") or {}).get("name") or a["agent_name"] for a in (d.get("agents") or [])]
+print(", ".join(names))' "$CFG"))"
 else
   no "display names" "$dn_bad"
 fi
@@ -170,11 +181,7 @@ echo "$reply" | grep -q 'ROUNDTRIP' && ok "full round trip: OpenWebUI -> LiteLLM
                                     || no "full round trip" "$(echo "$reply"|head -c 300)"
 
 # --- A2A agent ------------------------------------------------------------
-agent_model=$(python3 -c '
-import sys,yaml
-d=yaml.safe_load(open(sys.argv[1]))
-print(next((m["model_name"] for m in d["model_list"]
-            if str(m["litellm_params"]["model"]).startswith("a2a/")), ""))' "$CFG")
+agent_model=$(pick agent)
 
 if [ -n "$agent_model" ]; then
   card=$(docker compose exec -T adk-agent python -c "
@@ -199,17 +206,17 @@ except Exception: print("")')
   # Registered under the top-level `agents:` key, so LiteLLM also serves the
   # native A2A surface, not just the chat-completions bridge.
   cardname=$(curl -s -m 20 -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-    "$GW/a2a/$agent_model/.well-known/agent-card.json" \
+    "$GW/a2a/${agent_model#a2a/}/.well-known/agent-card.json" \
     | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("name",""))
 except Exception: print("")')
   [ -n "$cardname" ] && ok "LiteLLM serves the agent card (\"$cardname\")" \
-                     || no "LiteLLM agent card" "no card at /a2a/$agent_model/.well-known/agent-card.json"
+                     || no "LiteLLM agent card" "no card at /a2a/${agent_model#a2a/}/.well-known/agent-card.json"
 
   # The agent-bound key (agent_id) is the one meant for direct A2A clients.
-  akey_var="A2A_KEY_$(printf '%s' "$agent_model" | tr 'a-z-' 'A-Z_')"
+  akey_var="A2A_KEY_$(printf '%s' "${agent_model#a2a/}" | tr 'a-z-' 'A-Z_')"
   akey="${!akey_var:-}"
-  rpc=$(curl -s -m 240 -X POST "$GW/a2a/$agent_model" \
+  rpc=$(curl -s -m 240 -X POST "$GW/a2a/${agent_model#a2a/}" \
     -H "x-litellm-api-key: Bearer $akey" -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"Weather in Tokyo?"}]}}}')
   echo "$rpc" | grep -qi 'tokyo' \
@@ -221,7 +228,7 @@ except Exception: print("")')
   reachable=""
   for kv in OPENWEBUI_CHAT_KEY OPENWEBUI_EMBED_KEY ADK_AGENT_LITELLM_KEY; do
     kval="${!kv:-}"; [ -n "$kval" ] || continue
-    code=$(curl -s -o /dev/null -w '%{http_code}' -m 40 -X POST "$GW/a2a/$agent_model" \
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 40 -X POST "$GW/a2a/${agent_model#a2a/}" \
       -H "x-litellm-api-key: Bearer $kval" -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"hi"}]}}}')
     [ "$code" = 403 ] || [ "$code" = 401 ] || reachable="${reachable:+$reachable }$kv($code)"

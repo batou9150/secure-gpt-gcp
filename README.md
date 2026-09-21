@@ -79,31 +79,38 @@ through the gateway on a virtual key that is scoped to the plain chat models
 and deliberately excludes A2A models, so an agent cannot invoke itself and
 recurse. `make smoke` asserts that.
 
-### The agent is registered twice, on purpose
+### One declaration: the `agents:` block
 
-An A2A agent needs **both** entries, and they do different jobs.
-
-`agents:` (top level) registers the agent with the proxy. That is what gives
-the native A2A surface and an agent identity that keys and spend attach to:
+An agent needs only the top-level `agents:` entry. Registering there makes
+LiteLLM expose it *both* ways:
 
 ```
-POST /a2a/weather-time-agent                              JSON-RPC passthrough
-GET  /a2a/weather-time-agent/.well-known/agent-card.json  discovery
-POST /v1/a2a/discover                                     admin only
+POST /v1/chat/completions   model: a2a/weather-time-agent   ← Open WebUI
+POST /a2a/weather-time-agent                                JSON-RPC passthrough
+GET  /a2a/weather-time-agent/.well-known/agent-card.json    discovery
+POST /v1/a2a/discover                                       admin only
 ```
 
-`model_list` bridges that agent to `/v1/chat/completions` so Open WebUI can
-treat it as a model. **This is required** — registering under `agents:` alone
-does *not* expose the agent as a model; without the `model_list` entry it
-vanishes from `/v1/models` and a chat call returns *400 Invalid model name*.
-So seeing `a2a/weather-time-agent` in the models list is expected, not
-duplication.
+The model id carries an `a2a/` prefix, which is why `a2a/weather-time-agent`
+shows up in the model list — that is LiteLLM's own bridge, not a duplicate.
+`provision.sh` gives it the display name from `agent_card_params.name`, so
+users just see **Weather & Time Agent**.
 
-**Keep `api_base` on the model_list entry.** Without it the bridge resolves
-the address from the registry's agent card — whose `url` is LiteLLM's own
-proxy endpoint — so the call loops back into the proxy instead of reaching
-the agent. That failure is quiet: you get a fluent, plausible answer from a
-plain LLM with no tool call.
+A hand-written `model_list` entry for the same agent also works and lets you
+drop the prefix, but it duplicates the declaration and adds a trap: if it
+omits `api_base`, the bridge resolves the address from the registry's agent
+card — whose `url` is LiteLLM's own proxy endpoint — so the call loops back
+into the proxy. That failure is quiet, returning a fluent answer from a plain
+LLM with no tool call. Not worth the cosmetics; there is no `model_list`
+entry here.
+
+Two behaviours worth knowing:
+
+- An agent appears in `/v1/models` only for keys scoped to it. The master
+  key does **not** list it, which is expected, not a misconfiguration.
+- `/v1/models` for a scoped key echoes that key's `models` field, so a key
+  scoped to a name that does not resolve will advertise a model that 400s.
+  `make smoke` checks every model in the picker is actually callable.
 
 ### "Needs Setup" in the Agents page
 
@@ -274,7 +281,8 @@ over the API instead, and why it is safe to re-run.
 
 Add it to `model_list` in the config file for your provider
 (`litellm/config.vertex.yaml` or `litellm/config.aistudio.yaml`), with a
-`model_info.mode` of `chat` or `embedding`. That file is the single source of
+`model_info.mode` of `chat` or `embedding`. A new *agent* goes in the
+`agents:` block instead and needs no `model_list` entry. That file is the single source of
 truth: `provision.sh` derives the virtual-key scopes from it and
 `smoke-test.sh` derives its expectations from it, so nothing else needs
 editing. The first `chat` entry is treated as the primary model.
