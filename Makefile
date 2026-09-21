@@ -70,9 +70,12 @@ use-aistudio: ## Switch the model provider back to Google AI Studio
 	@sed -i '' 's|^LITELLM_CONFIG=.*|LITELLM_CONFIG=./litellm/config.aistudio.yaml|' .env
 	@$(MAKE) --no-print-directory up
 
+google-login: ## Configure "Sign in with Google" for Open WebUI
+	@./scripts/google-oauth.sh $(ARGS)
+
 provider: ## Show which model provider is active
 	@grep -E '^LITELLM_CONFIG=' .env | sed 's|.*/config\.|  provider: |; s|\.yaml||'
 	@grep -E '^VERTEX_LOCATION=' .env | sed 's|^|  |'
 
 .PHONY: help target target-local target-gcp bootstrap up down logs ps urls nuke \
-        provision preflight smoke creds use-vertex use-aistudio provider
+        provision preflight smoke creds google-login use-vertex use-aistudio provider

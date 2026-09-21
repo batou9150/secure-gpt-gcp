@@ -390,6 +390,46 @@ make use-vertex ARGS=path/to/sa-key.json   # or: ./scripts/vertex-setup.sh path/
 
 Go back with `make use-aistudio`.
 
+## Sign in with Google
+
+Off by default — Open WebUI uses its own password login until a Google OAuth
+client is configured. Then:
+
+```sh
+./scripts/google-oauth.sh                 # prints the redirect URIs to register
+./scripts/google-oauth.sh --interactive   # prompts; the secret is not echoed
+make up
+```
+
+Google publishes no API for creating a Web OAuth client, so that one step is
+manual. The helper prints the exact redirect URIs for every target you have,
+including **both** Cloud Run hostnames — a service is served on two, and a
+redirect from the unregistered one is rejected.
+
+Settings, all overridable in `.env`:
+
+| | Default | Why |
+|---|---|---|
+| `OAUTH_ALLOWED_DOMAINS` | `example.com` | Without it, *any* Google account on earth could sign up. `make smoke` fails if it is unset or `*`. |
+| `OAUTH_MERGE_ACCOUNTS_BY_EMAIL` | `true` | Links a Google login to the existing account with the same address, so the bootstrap admin keeps its role. It trusts the address Google asserts, which is sound only because the domain is pinned above. |
+| `ENABLE_LOGIN_FORM` | `true` | Keeps the password form as a way back in if OAuth is misconfigured. Set `false` once Google sign-in is proven. |
+| `ENABLE_OAUTH_SIGNUP` | `true` | Lets a first-time Google user create an account. With `DEFAULT_USER_ROLE=pending` they still wait for admin approval. |
+
+`WEBUI_URL` must match the address users actually visit; the redirect Google
+is sent back to is derived from it. The deploy sets it from the Cloud Run URL.
+
+On Google Cloud the client secret is held in Secret Manager as
+`secure-gpt-google-client-secret` and mounted, never passed as a plain
+environment variable.
+
+### The alternative: IAP
+
+If you would rather not run OAuth inside the application, put an external
+HTTPS load balancer with IAP in front of Cloud Run and let Open WebUI trust
+the identity it forwards (`WEBUI_AUTH_TRUSTED_EMAIL_HEADER`). That moves
+authentication to the platform. It needs a load balancer and a domain, which
+is why this stack does OAuth instead — it works identically on both targets.
+
 ## Operations
 
 ```sh

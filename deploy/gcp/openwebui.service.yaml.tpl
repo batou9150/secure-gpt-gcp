@@ -79,7 +79,25 @@ spec:
             - name: WEBUI_NAME
               value: "Secure GPT"
             - name: WEBUI_SESSION_COOKIE_SAME_SITE
-              value: strict
+              value: lax            # OAuth redirects need lax, not strict
+            # --- Sign in with Google -----------------------------------
+            # Inert unless GOOGLE_CLIENT_ID is set. WEBUI_URL must be the
+            # public URL or the redirect Google is sent back to is wrong.
+            - name: WEBUI_URL
+              value: "${GCP_OPENWEBUI_URL}"
+            - name: GOOGLE_CLIENT_ID
+              value: "${GOOGLE_CLIENT_ID:-}"
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: secure-gpt-google-client-secret, key: latest }
+            - name: ENABLE_OAUTH_SIGNUP
+              value: "${ENABLE_OAUTH_SIGNUP:-true}"
+            - name: OAUTH_ALLOWED_DOMAINS
+              value: "${OAUTH_ALLOWED_DOMAINS:-example.com}"
+            - name: OAUTH_MERGE_ACCOUNTS_BY_EMAIL
+              value: "${OAUTH_MERGE_ACCOUNTS_BY_EMAIL:-true}"
+            - name: ENABLE_LOGIN_FORM
+              value: "${ENABLE_LOGIN_FORM:-true}"
             - name: WEBUI_SESSION_COOKIE_SECURE
               value: "True"
             - name: AUDIO_STT_ENGINE

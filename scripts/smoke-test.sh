@@ -192,6 +192,19 @@ n=$(curl -s -m 60 -H "Authorization: Bearer $MK" -H 'Content-Type: application/j
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "$UI/health")
 [ "$code" = 200 ] && ok "OpenWebUI is serving" || no "OpenWebUI is serving" "HTTP $code"
 
+# Google sign-in, when configured. The provider has to be advertised by the
+# UI and the allowed-domain restriction has to be in force, otherwise any
+# Google account in the world could sign up.
+if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
+  cfg=$(curl -s -m 20 "$UI/api/config")
+  echo "$cfg" | python3 -c 'import sys,json;d=json.load(sys.stdin);sys.exit(0 if "google" in (d.get("oauth") or {}).get("providers", {}) else 1)' 2>/dev/null \
+    && ok "Google sign-in is advertised by the UI" \
+    || no "Google sign-in" "no google provider in /api/config"
+  [ -n "${OAUTH_ALLOWED_DOMAINS:-}" ] && [ "${OAUTH_ALLOWED_DOMAINS}" != "*" ] \
+    && ok "OAuth restricted to: ${OAUTH_ALLOWED_DOMAINS}" \
+    || no "OAuth domain restriction" "OAUTH_ALLOWED_DOMAINS is unset or '*' — any Google account could sign up"
+fi
+
 # On GCP the platform IAM check may be off, which makes Open WebUI's own
 # login the only thing in front of the UI. Prove it rejects anonymous calls.
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 "$UI/api/v1/auths/")

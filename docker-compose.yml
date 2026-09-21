@@ -147,8 +147,23 @@ services:
       DEFAULT_USER_ROLE: "pending"   # every later signup needs admin approval
       ENABLE_ADMIN_CHAT_ACCESS: "False"  # admins cannot read other users' chats
       ENABLE_ADMIN_EXPORT: "False"
-      WEBUI_SESSION_COOKIE_SAME_SITE: "strict"
+      WEBUI_SESSION_COOKIE_SAME_SITE: "lax"   # OAuth redirects need lax, not strict
       WEBUI_SESSION_COOKIE_SECURE: "False"  # set True once behind HTTPS
+
+      # --- Sign in with Google ---------------------------------------------
+      # Inert until GOOGLE_CLIENT_ID/SECRET are set: ./scripts/google-oauth.sh
+      WEBUI_URL: ${WEBUI_URL:-http://localhost:3000}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ENABLE_OAUTH_SIGNUP: ${ENABLE_OAUTH_SIGNUP:-true}
+      # Only these email domains may sign in at all.
+      OAUTH_ALLOWED_DOMAINS: ${OAUTH_ALLOWED_DOMAINS:-example.com}
+      # Links a Google login to an existing account with the same address, so
+      # the bootstrap admin keeps its role. It trusts the address Google
+      # asserts, which is sound here because the domain is pinned above.
+      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: ${OAUTH_MERGE_ACCOUNTS_BY_EMAIL:-true}
+      # Keep the password form as a way back in if OAuth is misconfigured.
+      ENABLE_LOGIN_FORM: ${ENABLE_LOGIN_FORM:-true}
 
       # --- Model access: LiteLLM is the ONLY backend ----------------------
       ENABLE_OPENAI_API: "True"
