@@ -77,14 +77,13 @@ Google exposes no API for creating a Web OAuth client, so create it once at:
   Name:              Secure GPT
 
   Authorised redirect URIs — add every target you will use:
-    ${LOCAL_URL}/oauth/google/callback
-    http://localhost:3000/oauth/google/callback
+    ${GOOGLE_REDIRECT_URI:-http://localhost:3000/oauth/google/callback}
 EOF
-for u in $GCP_URLS; do echo "    ${u}/oauth/google/callback"; done
-[ -n "$GCP_URLS" ] && cat <<'EOF'
+[ -n "${GCP_OPENWEBUI_URL:-}" ] && echo "    ${GCP_OPENWEBUI_URL}/oauth/google/callback"
+cat <<'EOF'
 
-  Cloud Run serves a service on two hostnames. Add the other one too — the
-  console's Service details page lists both next to "URL".
+  These are pinned via GOOGLE_REDIRECT_URI, so exactly these need
+  registering — not every hostname the service answers on.
 EOF
 cat <<EOF
 

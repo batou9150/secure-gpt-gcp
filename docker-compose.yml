@@ -154,6 +154,9 @@ services:
       # Inert until GOOGLE_CLIENT_ID/SECRET are set: ./scripts/google-oauth.sh
       WEBUI_URL: ${WEBUI_URL:-http://localhost:3000}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # Pinned so exactly one redirect URI has to be registered; otherwise it
+      # follows whichever host you browsed to (127.0.0.1 vs localhost).
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/oauth/google/callback}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       ENABLE_OAUTH_SIGNUP: ${ENABLE_OAUTH_SIGNUP:-true}
       # Only these email domains may sign in at all.

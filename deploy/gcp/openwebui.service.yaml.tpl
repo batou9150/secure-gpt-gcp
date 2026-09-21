@@ -87,6 +87,10 @@ spec:
               value: "${GCP_OPENWEBUI_URL}"
             - name: GOOGLE_CLIENT_ID
               value: "${GOOGLE_CLIENT_ID:-}"
+            # Pinned to the canonical service URL so only one redirect URI
+            # needs registering, not both Cloud Run hostnames.
+            - name: GOOGLE_REDIRECT_URI
+              value: "${GCP_OPENWEBUI_URL}/oauth/google/callback"
             - name: GOOGLE_CLIENT_SECRET
               valueFrom:
                 secretKeyRef: { name: secure-gpt-google-client-secret, key: latest }
