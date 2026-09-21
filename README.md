@@ -68,9 +68,9 @@ Concretely, the controls that are in place and verified by `make smoke`:
 
 | Control | How |
 |---|---|
-| Model allow-list | `litellm/config.yaml` `model_list` is the only reachable set. `gpt-4o` and friends are refused at the gateway. |
+| Model allow-list | the active config's `model_list` is the only reachable set. `gpt-4o` and friends are refused at the gateway. |
 | No key sprawl | `GEMINI_API_KEY` exists only in the `litellm` container. OpenWebUI never sees it. |
-| Least privilege | OpenWebUI holds two *scoped virtual keys*, not the master key. The chat key cannot call embeddings; the embedding key cannot call chat. |
+| Least privilege | OpenWebUI holds two *scoped virtual keys*, not the master key. The chat key cannot call embeddings; the embedding key cannot call chat. `provision.sh` re-syncs a key whose scope has drifted from the allow-list, so the picker can never offer a model the key cannot call. |
 | Workload isolation | Chat and bulk document indexing have separate keys and separate concurrency budgets, so uploading a large PDF cannot starve other people's chat. |
 | Network segmentation | Postgres and Redis have no internet route. |
 | Local-only binding | Ports bind to `127.0.0.1`, not `0.0.0.0`. |
@@ -177,6 +177,35 @@ Add it to `model_list` in the config file for your provider
 truth: `provision.sh` derives the virtual-key scopes from it and
 `smoke-test.sh` derives its expectations from it, so nothing else needs
 editing. The first `chat` entry is treated as the primary model.
+
+### Display names
+
+`model_info.display_name` controls what users see in the model picker. The
+model keeps its real id everywhere else, so the allow-list, the key scopes
+and the logs all stay auditable:
+
+```yaml
+  - model_name: gemini-3.1-flash-image
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-image
+      ...
+    model_info:
+      mode: chat
+      display_name: "nano banana 2"
+```
+
+Currently configured:
+
+| Model | Shown as |
+|---|---|
+| `gemini-3.8-flash` | `gemini-3.8-flash` (primary, unrenamed) |
+| `gemini-3.5-flash` | `gemini-flash` |
+| `gemini-3.5-flash-lite` | `gemini-flash-lite` |
+| `gemini-3.1-flash-image` | `nano banana 2` |
+
+`provision.sh` applies these through OpenWebUI's model API. An entry whose id
+equals the base model's id **renames it in place** rather than adding a
+second row to the picker. Run `make provision` after changing one.
 
 ```sh
 docker compose up -d litellm && make provision && make smoke
