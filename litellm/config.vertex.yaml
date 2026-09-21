@@ -61,16 +61,22 @@ model_list:
   - model_name: weather-time-agent
     litellm_params:
       model: a2a/weather-time-agent
+      # Point the bridge straight at the agent. Without this it resolves the
+      # api_base from the registry's agent card, whose url is LiteLLM's own
+      # proxy endpoint — the call then loops back into the proxy instead of
+      # reaching the agent, and you silently get a plain LLM answer.
       api_base: http://adk-agent:8080
     model_info:
       mode: chat
       display_name: "Weather & Time Agent"
-      # LiteLLM's A2A streaming iterator does not pick up the text from ADK's
-      # status-update events, so a streamed call returns an empty message
-      # (the non-streaming path is correct). Declaring no native streaming
-      # makes LiteLLM call the agent with message/send and synthesise the SSE
-      # stream for Open WebUI, which streams by default. Revisit if upstream
-      # fixes the iterator.
+      # LiteLLM's A2A -> OpenAI chat bridge loses the body of a streamed
+      # reply: it does call the agent with message/stream and the agent does
+      # return a correct SSE stream, but the bridge emits only a terminal
+      # chunk, so the client sees an empty message. Non-streaming is correct,
+      # and the native /a2a/{agent} passthrough streams correctly too — the
+      # defect is specific to the chat-completions bridge.
+      # provision.sh reads this flag and marks the model non-streaming in
+      # Open WebUI, which otherwise streams by default.
       supports_native_streaming: false
 
   - model_name: gemini-embedding-001
@@ -106,3 +112,21 @@ router_settings:
   routing_strategy: simple-shuffle
   redis_host: os.environ/REDIS_HOST
   redis_port: os.environ/REDIS_PORT
+
+# ---------------------------------------------------------------------------
+# A2A agent registry (the documented way to register agents).
+# Registering here also gives the native A2A surface:
+#   POST /a2a/weather-time-agent               JSON-RPC passthrough
+#   GET  /a2a/weather-time-agent/.well-known/agent-card.json
+#   GET  /v1/a2a/discover
+# and lets virtual keys / teams be granted or denied per agent.
+# The model_list entry above bridges the same agent to /v1/chat/completions
+# for Open WebUI.
+# ---------------------------------------------------------------------------
+agents:
+  - agent_name: weather-time-agent
+    agent_card_params:
+      name: "Weather & Time Agent"
+      description: "Reports the weather and current time for a city."
+      url: "http://adk-agent:8080"
+      protocolVersion: "1.0"

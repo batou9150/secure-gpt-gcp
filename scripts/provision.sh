@@ -71,10 +71,10 @@ PY
   fi
 }
 
-mint() {  # mint ALIAS MODELS_JSON RPM PARALLEL  -> echoes key
+mint() {  # mint ALIAS MODELS_JSON RPM PARALLEL [EXTRA_JSON] -> echoes key
   curl -s -m 30 -X POST "$GW/key/generate" \
     -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
-    -d "{\"key_alias\":\"$1-$(date +%s)\",\"models\":[$2],\"rpm_limit\":$3,\"max_parallel_requests\":$4}" \
+    -d "{\"key_alias\":\"$1-$(date +%s)\",\"models\":[$2],\"rpm_limit\":$3,\"max_parallel_requests\":$4${5:+,$5}}" \
     | jqp 'd["key"]'
 }
 
@@ -91,8 +91,8 @@ print(",".join(sorted(d["info"]["models"] or [])))' 2>/dev/null
 # Turn the JSON-ish list ("a","b") into a sorted plain-name CSV for comparison.
 plain() { printf '%s' "$1" | tr -d \" | tr ',' '\n' | sort | paste -sd, -; }
 
-ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL
-  local var=$1 alias=$2 models=$3 rpm=$4 par=$5 label=$6
+ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL [EXTRA_JSON]
+  local var=$1 alias=$2 models=$3 rpm=$4 par=$5 label=$6 extra="${7:-}"
   local cur="${!var:-}"
   if key_valid "$cur"; then
     if [ "$(scope_of "$cur")" = "$(plain "$models")" ]; then
@@ -101,11 +101,11 @@ ensure_key() {  # ensure_key VARNAME ALIAS MODELS RPM PARALLEL LABEL
     fi
     curl -s -o /dev/null -m 30 -X POST "$GW/key/update" \
       -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H 'Content-Type: application/json' \
-      -d "{\"key\":\"$cur\",\"models\":[$models],\"rpm_limit\":$rpm,\"max_parallel_requests\":$par}"
+      -d "{\"key\":\"$cur\",\"models\":[$models],\"rpm_limit\":$rpm,\"max_parallel_requests\":$par${extra:+,$extra}}"
     say "$label key: scope re-synced to the allow-list"
     return
   fi
-  local k; k=$(mint "$alias" "$models" "$rpm" "$par")
+  local k; k=$(mint "$alias" "$models" "$rpm" "$par" "$extra")
   put_env "$var" "$k"
   printf -v "$var" '%s' "$k"
   say "$label key: issued (${rpm} rpm, ${par} parallel)"
@@ -118,8 +118,13 @@ ensure_key OPENWEBUI_EMBED_KEY open-webui-embed "$EMBED_MODELS" "$EMBED_RPM_LIMI
 # excludes A2A models so it cannot call itself back through the gateway.
 if [ -n "$AGENT_LLM_MODELS" ]; then
   before="${ADK_AGENT_LITELLM_KEY:-}"
+  # Model scoping alone is not enough: the native /a2a/{agent} endpoint
+  # authenticates the key but does not apply the model allow-list, so the
+  # agent's own key could still reach an agent there. allowed_routes is an
+  # allowlist enforced for every route, so pin the key to the chat route.
   ensure_key ADK_AGENT_LITELLM_KEY adk-agent "$AGENT_LLM_MODELS" \
-             "${AGENT_RPM_LIMIT:-300}" "${AGENT_PARALLEL:-10}" "ADK agent"
+             "${AGENT_RPM_LIMIT:-300}" "${AGENT_PARALLEL:-10}" "ADK agent" \
+             '"allowed_routes":["/v1/chat/completions","/chat/completions"]' 
   if [ "$before" != "$ADK_AGENT_LITELLM_KEY" ]; then
     docker compose up -d adk-agent >/dev/null 2>&1 || true
     say "ADK agent: restarted with its new key"
@@ -181,10 +186,10 @@ def call(path, payload):
         return e.code, e.read()[:200]
 
 for mid, name, native_stream in wanted:
-    # LiteLLM's A2A provider does not perform the upstream call when
-    # stream=true (it returns only a terminal chunk), so models declaring
-    # supports_native_streaming: false are marked non-streaming here and
-    # Open WebUI requests them without streaming.
+    # LiteLLM's A2A -> OpenAI chat bridge returns an empty body for a
+    # streamed reply, so models declaring supports_native_streaming: false
+    # are marked non-streaming here and Open WebUI requests them without
+    # streaming.
     params = {} if native_stream else {"stream_response": False}
     body = {"id": mid, "name": name, "base_model_id": None,
             "meta": {"description": None}, "params": params, "is_active": True}

@@ -196,6 +196,31 @@ except Exception: print("")')
     && ok "A2A round trip: OpenAI in -> JSON-RPC -> agent tools -> OpenAI out" \
     || no "A2A round trip" "reply: $(echo "$rep" | head -c 200)"
 
+  # Registered under the top-level `agents:` key, so LiteLLM also serves the
+  # native A2A surface, not just the chat-completions bridge.
+  cardname=$(curl -s -m 20 -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+    "$GW/a2a/$agent_model/.well-known/agent-card.json" \
+    | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("name",""))
+except Exception: print("")')
+  [ -n "$cardname" ] && ok "LiteLLM serves the agent card (\"$cardname\")" \
+                     || no "LiteLLM agent card" "no card at /a2a/$agent_model/.well-known/agent-card.json"
+
+  rpc=$(curl -s -m 240 -X POST "$GW/a2a/$agent_model" \
+    -H "x-litellm-api-key: Bearer $OPENWEBUI_CHAT_KEY" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"Weather in Tokyo?"}]}}}')
+  echo "$rpc" | grep -qi 'tokyo' \
+    && ok "native A2A JSON-RPC passthrough works" \
+    || no "native A2A passthrough" "$(echo "$rpc" | head -c 200)"
+
+  # A key with no access must be refused at the agent endpoint too.
+  denied=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "$GW/a2a/$agent_model" \
+    -H "x-litellm-api-key: Bearer $ADK_AGENT_LITELLM_KEY" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","messageId":"m1","parts":[{"kind":"text","text":"hi"}]}}}')
+  [ "$denied" = 403 ] || [ "$denied" = 401 ] \
+    && ok "native A2A endpoint enforces per-key agent access (HTTP $denied)" \
+    || no "native A2A access control" "expected 401/403 for the agent's own key, got $denied"
+
   # The agent reasons through the gateway, so its key must not be able to
   # reach an A2A model — otherwise it could call itself and recurse.
   body=$(curl -s -m 30 -H "Authorization: Bearer $ADK_AGENT_LITELLM_KEY" -H 'Content-Type: application/json' \

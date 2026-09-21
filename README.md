@@ -79,15 +79,46 @@ through the gateway on a virtual key that is scoped to the plain chat models
 and deliberately excludes A2A models, so an agent cannot invoke itself and
 recurse. `make smoke` asserts that.
 
-### Streaming caveat
+### Two ways in, and a streaming caveat
 
-LiteLLM's A2A provider does not perform the upstream call when `stream=true` —
-it returns only a terminal chunk, so a streamed reply arrives empty. The
-non-streaming path is correct. The config therefore marks this model
-`supports_native_streaming: false`, and `provision.sh` sets `stream_response:
-false` on its Open WebUI entry so the UI requests it without streaming. The
-answer appears in one go instead of token by token. Remove both once upstream
-handles the streamed case.
+Registering the agent under the top-level `agents:` key (the documented way)
+gives the native A2A surface on the proxy itself:
+
+```
+POST /a2a/weather-time-agent                              JSON-RPC passthrough
+GET  /a2a/weather-time-agent/.well-known/agent-card.json  discovery
+POST /v1/a2a/discover                                     list agents
+```
+
+Authenticate those with `x-litellm-api-key: Bearer <virtual key>`, which
+LiteLLM prefers over `Authorization` when the inbound header might carry a
+token meant for the agent itself.
+
+**The native endpoint does not apply a key's model allow-list.** It
+authenticates the key, but the `models` scope that governs
+`/v1/chat/completions` is not checked there, so a key with no access to the
+agent's model can still invoke it over `/a2a/{agent}`. The ADK agent's own
+key is therefore also pinned with `allowed_routes` to the chat route, which
+*is* enforced on every route; without that the no-recursion guarantee would
+hold on the chat bridge but not here. `make smoke` asserts the 403.
+
+The `model_list` entry bridges the *same* agent to `/v1/chat/completions` so
+Open WebUI can treat it as a model.
+
+**Keep `api_base` on that model_list entry.** Without it the bridge resolves
+the address from the registry's agent card — whose `url` is LiteLLM's own
+proxy endpoint — so the call loops back into the proxy instead of reaching
+the agent, and you silently get a plain LLM answer with no tool use. That
+failure is quiet: the reply looks plausible, it just isn't the agent.
+
+**Streaming.** The native passthrough above streams correctly. The
+chat-completions *bridge* does not: it calls the agent with `message/stream`
+and the agent returns a valid SSE stream, but the bridge emits only a
+terminal chunk, so the client sees an empty message. Non-streaming is
+correct. The model therefore declares `supports_native_streaming: false` and
+`provision.sh` sets `stream_response: false` on its Open WebUI entry, so the
+answer arrives in one go rather than token by token. Remove both once
+upstream fixes the bridge.
 
 ### Adding tools
 
@@ -127,7 +158,8 @@ Concretely, the controls that are in place and verified by `make smoke`:
 | Admins cannot read chats | `ENABLE_ADMIN_CHAT_ACCESS=False`. |
 | No third-party egress from the UI | Web search, image generation, community sharing, external STT and direct user-defined connections are all disabled. |
 | Telemetry off | Across OpenWebUI, LiteLLM and Scarf. |
-| Agents are credential-free | The ADK agent gets a scoped virtual key, never a Google credential, and its key excludes A2A models so it cannot recurse. |
+| Agents are credential-free | The ADK agent gets a scoped virtual key, never a Google credential. |
+| Agents cannot recurse | The agent's key excludes A2A models *and* is pinned via `allowed_routes` to the chat route, closing the native `/a2a/{agent}` path too. |
 
 ### Limits you should know about
 
