@@ -209,14 +209,23 @@ if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # shows up as redirect_uri_mismatch when a user tries to sign in.
   # A wrong secret surfaces to users as "email or password provided is
   # incorrect", which points nowhere near OAuth. Check it directly.
+  # The callback differs per target: .env holds the local one, while the
+  # deployed service derives its own from the Cloud Run URL. Check the one
+  # the active target actually sends, not whichever is in .env.
+  if [ "$IN_CLOUD" = 1 ]; then
+    expect_cb="${GCP_OPENWEBUI_URL}/oauth/google/callback"
+  else
+    expect_cb="${GOOGLE_REDIRECT_URI:-http://localhost:3000/oauth/google/callback}"
+  fi
+
   if out=$(./scripts/check-oauth-secret.sh 2>/dev/null); then
     ok "Google accepts the client id and secret"
   else
     no "Google client credentials" "$out"
   fi
 
-  if out=$(./scripts/check-oauth-redirect.sh 2>/dev/null); then
-    ok "Google accepts the callback (${GOOGLE_REDIRECT_URI:-derived})"
+  if out=$(./scripts/check-oauth-redirect.sh "$expect_cb" 2>/dev/null); then
+    ok "Google accepts the callback ($expect_cb)"
   else
     no "Google callback registration" "$out — add it at console.cloud.google.com/auth/clients"
   fi
