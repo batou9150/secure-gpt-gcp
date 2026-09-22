@@ -207,6 +207,14 @@ if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # Ask Google directly whether it accepts this client + callback. Catches the
   # commonest failure — an unregistered redirect URI — which otherwise only
   # shows up as redirect_uri_mismatch when a user tries to sign in.
+  # A wrong secret surfaces to users as "email or password provided is
+  # incorrect", which points nowhere near OAuth. Check it directly.
+  if out=$(./scripts/check-oauth-secret.sh 2>/dev/null); then
+    ok "Google accepts the client id and secret"
+  else
+    no "Google client credentials" "$out"
+  fi
+
   if out=$(./scripts/check-oauth-redirect.sh 2>/dev/null); then
     ok "Google accepts the callback (${GOOGLE_REDIRECT_URI:-derived})"
   else
