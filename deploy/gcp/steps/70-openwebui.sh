@@ -19,6 +19,11 @@ gc artifacts docker images describe "$SHIM_IMAGE" >/dev/null 2>&1 \
   || gc builds submit deploy/gcp/auth-proxy --tag "$SHIM_IMAGE" --quiet >/dev/null
 
 export SA_EMAIL SQL_CONN GCP_LITELLM_URL
+# Pin concrete secret versions so a rotated secret actually produces a new
+# revision instead of being silently served from the old one.
+export OPENWEBUI_SECRET_KEY_VERSION="$(secret_version secure-gpt-openwebui-secret-key)"
+export GOOGLE_CLIENT_SECRET_VERSION="$(secret_version secure-gpt-google-client-secret)"
+say "secret versions: openwebui-key=${OPENWEBUI_SECRET_KEY_VERSION} google-client=${GOOGLE_CLIENT_SECRET_VERSION}"
 export OPENWEBUI_CHAT_KEY="${OPENWEBUI_CHAT_KEY:-$LITELLM_MASTER_KEY}"
 export OPENWEBUI_EMBED_KEY="${OPENWEBUI_EMBED_KEY:-$LITELLM_MASTER_KEY}"
 

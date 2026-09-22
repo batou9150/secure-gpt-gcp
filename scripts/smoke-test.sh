@@ -207,6 +207,30 @@ if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # Ask Google directly whether it accepts this client + callback. Catches the
   # commonest failure — an unregistered redirect URI — which otherwise only
   # shows up as redirect_uri_mismatch when a user tries to sign in.
+  # A rotated secret only reaches users if the serving revision references
+  # the new version. `key: latest` does not change the spec, so Cloud Run
+  # creates no revision and keeps serving the old value — the spec must pin
+  # the number. Compare what the service asks for against what exists.
+  if [ "$IN_CLOUD" = 1 ]; then
+    want_v=$(gcloud --project "$GCP_PROJECT" secrets versions list secure-gpt-google-client-secret \
+      --filter='state:ENABLED' --sort-by=~name --limit=1 --format='value(name)' 2>/dev/null)
+    have_v=$(gcloud --project "$GCP_PROJECT" run services describe open-webui \
+      --region "${GCP_REGION:-europe-west1}" --format=json 2>/dev/null | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for c in d["spec"]["template"]["spec"]["containers"]:
+    for e in c.get("env", []):
+        if e["name"] == "GOOGLE_CLIENT_SECRET":
+            print((e.get("valueFrom") or {}).get("secretKeyRef", {}).get("key", ""))' 2>/dev/null)
+    if [ "$have_v" = "$want_v" ] && [ -n "$want_v" ]; then
+      ok "deployed revision pins the current client secret (v$have_v)"
+    elif [ "$have_v" = latest ]; then
+      no "client secret version" "spec says 'latest', so rotating the secret creates no new revision and the old value keeps serving"
+    else
+      no "client secret version" "serving v${have_v:-?} but v${want_v:-?} is current — redeploy"
+    fi
+  fi
+
   # A wrong secret surfaces to users as "email or password provided is
   # incorrect", which points nowhere near OAuth. Check it directly.
   # The callback differs per target: .env holds the local one, while the

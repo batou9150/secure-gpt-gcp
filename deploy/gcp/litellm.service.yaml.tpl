@@ -38,18 +38,18 @@ spec:
               value: "postgresql://securegpt:${POSTGRES_PASSWORD}@localhost/litellm?host=/cloudsql/${SQL_CONN}"
             - name: LITELLM_MASTER_KEY
               valueFrom:
-                secretKeyRef: { name: secure-gpt-litellm-master-key, key: latest }
+                secretKeyRef: { name: secure-gpt-litellm-master-key, key: "${LITELLM_MASTER_KEY_VERSION:-latest}" }
             - name: LITELLM_SALT_KEY
               valueFrom:
-                secretKeyRef: { name: secure-gpt-litellm-salt-key, key: latest }
+                secretKeyRef: { name: secure-gpt-litellm-salt-key, key: "${LITELLM_SALT_KEY_VERSION:-latest}" }
             - name: UI_USERNAME
               value: admin
             - name: UI_PASSWORD
               valueFrom:
-                secretKeyRef: { name: secure-gpt-litellm-ui-password, key: latest }
+                secretKeyRef: { name: secure-gpt-litellm-ui-password, key: "${LITELLM_UI_PASSWORD_VERSION:-latest}" }
             - name: GEMINI_API_KEY
               valueFrom:
-                secretKeyRef: { name: secure-gpt-gemini-api-key, key: latest }
+                secretKeyRef: { name: secure-gpt-gemini-api-key, key: "${GEMINI_API_KEY_VERSION:-latest}" }
             # Vertex: ADC comes from the runtime service account, so there is
             # no credentials file to mount.
             - name: VERTEX_PROJECT

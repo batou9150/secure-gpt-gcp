@@ -38,7 +38,7 @@ spec:
               value: "postgresql://securegpt:${POSTGRES_PASSWORD}@localhost/openwebui?host=/cloudsql/${SQL_CONN}"
             - name: WEBUI_SECRET_KEY
               valueFrom:
-                secretKeyRef: { name: secure-gpt-openwebui-secret-key, key: latest }
+                secretKeyRef: { name: secure-gpt-openwebui-secret-key, key: "${OPENWEBUI_SECRET_KEY_VERSION:-latest}" }
             # The gateway is reached through the sidecar, never directly.
             - name: OPENAI_API_BASE_URL
               value: "http://localhost:4000/v1"
@@ -93,7 +93,7 @@ spec:
               value: "${GCP_OPENWEBUI_URL}/oauth/google/callback"
             - name: GOOGLE_CLIENT_SECRET
               valueFrom:
-                secretKeyRef: { name: secure-gpt-google-client-secret, key: latest }
+                secretKeyRef: { name: secure-gpt-google-client-secret, key: "${GOOGLE_CLIENT_SECRET_VERSION:-latest}" }
             - name: ENABLE_OAUTH_SIGNUP
               value: "${ENABLE_OAUTH_SIGNUP:-true}"
             - name: OAUTH_ALLOWED_DOMAINS

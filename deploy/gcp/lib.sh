@@ -62,3 +62,15 @@ mirror_image() {
   rm -rf "$ctx"
   echo "$dest"
 }
+
+# The numeric latest version of a secret.
+#
+# Cloud Run resolves `key: latest` when an instance starts and then caches it,
+# and a spec that says "latest" does not change when a new version is added —
+# so `services replace` creates no new revision and the old value keeps being
+# served. Pinning the number makes the spec change whenever the secret does,
+# which is what forces a new revision.
+secret_version() {
+  gc secrets versions list "$1" --filter='state:ENABLED' --sort-by=~name \
+    --limit=1 --format='value(name)' 2>/dev/null
+}

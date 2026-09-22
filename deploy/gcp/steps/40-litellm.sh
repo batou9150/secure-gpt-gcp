@@ -29,6 +29,10 @@ fi
 say "shim: $SHIM_IMAGE"
 
 export SHIM_IMAGE SA_EMAIL SQL_CONN GCP_REGION
+export LITELLM_MASTER_KEY_VERSION="$(secret_version secure-gpt-litellm-master-key)"
+export LITELLM_SALT_KEY_VERSION="$(secret_version secure-gpt-litellm-salt-key)"
+export LITELLM_UI_PASSWORD_VERSION="$(secret_version secure-gpt-litellm-ui-password)"
+export GEMINI_API_KEY_VERSION="$(secret_version secure-gpt-gemini-api-key)"
 say "mirroring the gateway image into Artifact Registry (Cloud Run cannot pull ghcr.io)"
 export LITELLM_IMAGE
 LITELLM_IMAGE=$(mirror_image "${LITELLM_SOURCE_IMAGE:-ghcr.io/berriai/litellm-database:main-stable}" "litellm:main-stable")
