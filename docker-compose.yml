@@ -72,12 +72,12 @@ services:
       #   AI Studio -> GEMINI_API_KEY
       #   Vertex AI -> secrets/gcp-credentials.json (+ project and region)
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      VERTEX_PROJECT: ${VERTEX_PROJECT:-your-project-id}
+      VERTEX_PROJECT: ${VERTEX_PROJECT:-}
       VERTEX_LOCATION: ${VERTEX_LOCATION:-eu}
       VERTEX_EMBED_LOCATION: ${VERTEX_EMBED_LOCATION:-europe-west1}
       GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-credentials.json
-      GOOGLE_CLOUD_PROJECT: ${VERTEX_PROJECT:-your-project-id}
-      GOOGLE_CLOUD_QUOTA_PROJECT: ${VERTEX_PROJECT:-your-project-id}
+      GOOGLE_CLOUD_PROJECT: ${VERTEX_PROJECT:-}
+      GOOGLE_CLOUD_QUOTA_PROJECT: ${VERTEX_PROJECT:-}
       # Admin UI credentials
       UI_USERNAME: admin
       UI_PASSWORD: ${LITELLM_UI_PASSWORD:?set LITELLM_UI_PASSWORD in .env}

@@ -18,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; . ./.env; set +a
 
-PROJECT="${VERTEX_PROJECT:-your-project-id}"
+PROJECT="${VERTEX_PROJECT:?Set VERTEX_PROJECT in .env}"
 MODEL="gemini-3.8-flash"
 EMBED="gemini-embedding-001"
 DEST="secrets/gcp-credentials.json"
