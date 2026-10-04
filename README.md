@@ -518,3 +518,7 @@ docker compose up -d litellm && make provision && make smoke
 name in `.env`. If you have sourced `.env` into your shell and then edit it,
 Compose will keep using the stale exported value. Use a fresh shell, or
 `env -u VERTEX_LOCATION docker compose up -d --force-recreate litellm`.
+
+## License
+
+License: MIT — see [LICENSE](LICENSE).

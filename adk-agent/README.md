@@ -92,3 +92,7 @@ Built-in telemetry exports to Cloud Trace, BigQuery, and Cloud Logging.
 
 This agent supports the [A2A Protocol](https://a2a-protocol.org/). Use the [A2A Inspector](https://github.com/a2aproject/a2a-inspector) to test interoperability.
 See the [A2A Inspector docs](https://github.com/a2aproject/a2a-inspector) for details.
+
+## License
+
+License: MIT — see [LICENSE](../LICENSE).
