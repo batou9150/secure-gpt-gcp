@@ -38,8 +38,11 @@ def _summarise(result: dict) -> None:
     status = result.get("status")
     if not isinstance(status, dict) or status.get("message"):
         return  # already carries a message; leave it alone
-    texts = [t for a in result.get("artifacts") or []
-             if isinstance(a, dict) and (t := _text_of(a.get("parts")))]
+    texts = [
+        t
+        for a in result.get("artifacts") or []
+        if isinstance(a, dict) and (t := _text_of(a.get("parts")))
+    ]
     if not texts:
         return
     status["message"] = {
@@ -66,8 +69,9 @@ class A2ATaskSummaryMiddleware(BaseHTTPMiddleware):
 
         body = b"".join([chunk async for chunk in response.body_iterator])
         if len(body) > _MAX_BYTES:
-            return Response(body, response.status_code, dict(response.headers),
-                            response.media_type)
+            return Response(
+                body, response.status_code, dict(response.headers), response.media_type
+            )
         try:
             payload = json.loads(body)
             result = payload.get("result")
