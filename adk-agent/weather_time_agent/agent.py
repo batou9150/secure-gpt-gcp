@@ -10,6 +10,7 @@ import os
 from zoneinfo import ZoneInfo
 
 from google.adk.agents import Agent
+from google.adk.apps import App
 from google.adk.models.lite_llm import LiteLlm
 
 # city -> (IANA timezone, canned weather)
@@ -42,7 +43,10 @@ def get_weather(city: str) -> dict:
                 f"Known cities: {', '.join(c.title() for c in sorted(CITIES))}."
             ),
         }
-    return {"status": "success", "report": f"The weather in {city.title()} is {entry[1]}."}
+    return {
+        "status": "success",
+        "report": f"The weather in {city.title()} is {entry[1]}.",
+    }
 
 
 def get_current_time(city: str) -> dict:
@@ -110,7 +114,5 @@ root_agent = Agent(
     ),
     tools=[get_weather, get_current_time],
 )
-
-from google.adk.apps import App
 
 app = App(root_agent=root_agent, name="weather_time_agent")
