@@ -35,7 +35,7 @@ export LITELLM_UI_PASSWORD_VERSION="$(secret_version secure-gpt-litellm-ui-passw
 export GEMINI_API_KEY_VERSION="$(secret_version secure-gpt-gemini-api-key)"
 say "mirroring the gateway image into Artifact Registry (Cloud Run cannot pull ghcr.io)"
 export LITELLM_IMAGE
-LITELLM_IMAGE=$(mirror_image "${LITELLM_SOURCE_IMAGE:-ghcr.io/berriai/litellm-database:main-stable}" "litellm:main-stable")
+LITELLM_IMAGE=$(mirror_image "${LITELLM_SOURCE_IMAGE:-ghcr.io/berriai/litellm-database:v1.106.4}" "litellm:v1.106.4")
 say "image: $LITELLM_IMAGE"
 export AGENT_ENGINE_RESOURCE="${GCP_AGENT_ENGINE_RESOURCE:-}"
 export AGENT_APP_NAME AGENT_ENGINE_LOCATION="${GCP_AGENT_LOCATION:-$GCP_REGION}"

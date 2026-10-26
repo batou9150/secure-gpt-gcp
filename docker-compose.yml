@@ -54,7 +54,7 @@ services:
   # The only service allowed to reach Google. Enforces auth, rate limits,
   # budgets and model allow-listing.
   litellm:
-    image: ghcr.io/berriai/litellm-database:main-stable
+    image: ghcr.io/berriai/litellm-database:v1.106.4
     restart: unless-stopped
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
     depends_on:
