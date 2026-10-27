@@ -9,6 +9,7 @@ set -a; . ./.env; set +a
 GCP_REGION="${GCP_REGION:-europe-west1}"
 GCP_SQL_INSTANCE="${GCP_SQL_INSTANCE:-secure-gpt-db}"
 GCP_SQL_TIER="${GCP_SQL_TIER:-db-g1-small}"
+GCP_SQL_VERSION="${GCP_SQL_VERSION:-POSTGRES_18}"
 GCP_SA="${GCP_SA:-secure-gpt-run}"
 SA_EMAIL="${GCP_SA}@${GCP_PROJECT}.iam.gserviceaccount.com"
 AGENT_APP_NAME="${AGENT_APP_NAME:-weather_time_agent}"

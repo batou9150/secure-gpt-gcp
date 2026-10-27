@@ -50,6 +50,9 @@ urls: ## Print the URLs for the active target
 nuke: ## Stop and DELETE all data
 	$(call dispatch,nuke)
 
+upgrade-postgres: ## One-off: move existing data from Postgres 16 to 18
+	$(call dispatch,upgrade-postgres)
+
 # --- Target-independent ------------------------------------------------------
 provision: ## Re-apply keys, agent bindings and OpenWebUI settings (idempotent)
 	@./scripts/provision.sh
@@ -77,5 +80,5 @@ provider: ## Show which model provider is active
 	@grep -E '^LITELLM_CONFIG=' .env | sed 's|.*/config\.|  provider: |; s|\.yaml||'
 	@grep -E '^VERTEX_LOCATION=' .env | sed 's|^|  |'
 
-.PHONY: help target target-local target-gcp bootstrap up down logs ps urls nuke \
+.PHONY: help target target-local target-gcp bootstrap up down logs ps urls nuke upgrade-postgres \
         provision preflight smoke creds google-login use-vertex use-aistudio provider

@@ -439,10 +439,29 @@ make provision  # re-apply keys and OpenWebUI settings (idempotent)
 make smoke      # run the checks
 make down       # stop, keep data
 make nuke       # stop and delete all data
+make upgrade-postgres  # one-off: move existing data from Postgres 16 to 18
 ```
 
 The LiteLLM admin UI (spend, keys, budgets) is at <http://localhost:4000/ui>,
 username `admin`, password from `make creds`.
+
+### Upgrading from Postgres 16
+
+The stack now runs Postgres 18 (and Redis 8). Postgres 18 can't open data
+written by 16, so an existing install needs a one-off copy:
+
+- **Local:** `make upgrade-postgres` stops the stack, dumps the `litellm` and
+  `openwebui` databases from the old `postgres-data` volume, and restores them
+  into a new `postgres18-data` volume. The old volume is left as it was; delete
+  it with `docker volume rm secure-gpt_postgres-data` once you've checked your
+  chats and keys. Without this step, `make up` starts on an empty database.
+- **Google Cloud:** `make target-gcp && make upgrade-postgres` upgrades the
+  Cloud SQL instance in place. Cloud SQL takes a backup first; LiteLLM and
+  Open WebUI are down until it finishes. `make up` warns while the instance is
+  still on an older version.
+
+Redis holds no persistent data here (no snapshots, no AOF), so it needs no
+migration. Note that Redis 8 is licensed AGPLv3/RSALv2/SSPL; Redis 7 was BSD.
 
 ## Configuration
 
