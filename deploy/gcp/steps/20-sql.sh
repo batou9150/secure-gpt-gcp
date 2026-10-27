@@ -6,12 +6,17 @@ set -euo pipefail
 step "Cloud SQL"
 if gc sql instances describe "$GCP_SQL_INSTANCE" >/dev/null 2>&1; then
   say "$GCP_SQL_INSTANCE exists"
+  version=$(gc sql instances describe "$GCP_SQL_INSTANCE" --format='value(databaseVersion)')
+  if [ "$version" != "$GCP_SQL_VERSION" ]; then
+    say "WARNING: $GCP_SQL_INSTANCE runs $version, expected $GCP_SQL_VERSION."
+    say "Run 'make upgrade-postgres' to upgrade it in place (causes downtime)."
+  fi
   gc sql instances patch "$GCP_SQL_INSTANCE" --activation-policy=ALWAYS --quiet >/dev/null 2>&1 || true
 else
   say "creating $GCP_SQL_INSTANCE (a few minutes)…"
   # The edition must be explicit: a project defaulting to ENTERPRISE_PLUS
   # rejects shared-core tiers like db-g1-small.
-  common=(--database-version=POSTGRES_16 --tier="$GCP_SQL_TIER"
+  common=(--database-version="$GCP_SQL_VERSION" --tier="$GCP_SQL_TIER"
           --edition="${GCP_SQL_EDITION:-ENTERPRISE}" --region="$GCP_REGION"
           --storage-auto-increase --quiet)
   # Prefer a private IP. It needs service-networking peering on the VPC, which

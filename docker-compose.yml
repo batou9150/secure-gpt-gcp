@@ -20,14 +20,18 @@ x-logging: &logging
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: securegpt
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: litellm
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # From Postgres 18 the image keeps its data in /var/lib/postgresql/18/docker,
+      # so the volume is mounted one level up. A new volume name keeps the
+      # Postgres 16 data in postgres-data untouched; `make upgrade-postgres`
+      # copies it across.
+      - postgres18-data:/var/lib/postgresql
       - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
     networks: [backend]
     healthcheck:
@@ -39,7 +43,7 @@ services:
     <<: *logging
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     networks: [backend]
@@ -217,5 +221,5 @@ networks:
   egress: {}
 
 volumes:
-  postgres-data: {}
+  postgres18-data: {}
   openwebui-data: {}
