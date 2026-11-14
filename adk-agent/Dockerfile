@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/usr/local
 
-COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
