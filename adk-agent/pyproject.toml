@@ -10,7 +10,7 @@ authors = [
 dependencies = [
     # agent.py routes its own LLM calls through the LiteLLM gateway
     "litellm>=1.88.6",
-    "google-adk[bigquery-analytics,gcp,otel-gcp]>=2.13.0,<2.14.0",
+    "google-adk[bigquery-analytics,gcp,otel-gcp]>=2.14.0,<2.15.0",
     "gcsfs>=2024.11.0",
     "a2a-sdk[http-server]>=1.0,<2",
     "aiohttp>=3.13.4",
@@ -32,7 +32,7 @@ dev = [
 
 [project.optional-dependencies]
 eval = [
-    "google-adk[eval]>=2.13.0,<2.14.0",
+    "google-adk[eval]>=2.14.0,<2.15.0",
     "google-cloud-aiplatform[evaluation]>=2.2.0,<3.0.0"
 ]
 lint = [
@@ -73,11 +73,11 @@ exclude = [".venv/**"]
 
 [tool.ty.rules]
 # Ignore common issues with third-party libraries and dynamic code patterns
-unresolved-import = "ignore"
-unresolved-attribute = "ignore"
+import-not-found = "ignore"
+missing-attribute = "ignore"
 invalid-argument-type = "ignore"
 invalid-assignment = "ignore"
-invalid-return-type = "ignore"
+invalid-explicit-return = "ignore"
 possibly-missing-attribute = "ignore"
 not-subscriptable = "ignore"
 deprecated = "ignore"
